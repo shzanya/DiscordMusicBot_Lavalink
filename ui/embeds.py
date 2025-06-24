@@ -149,6 +149,7 @@ async def send_now_playing_message(channel, track: wavelink.Playable, player: Ha
     # Привязываем message к view
     view.message = message
     player.view = view
+    player.now_playing_message = message
 
     # Регистрируем автообновление
     await now_playing_updater.register_message(

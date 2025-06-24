@@ -6,13 +6,13 @@ from typing import Dict, List, Optional, Union
 
 import discord
 import wavelink
-from wavelink import Queue
 from cachetools import TTLCache
-from discord import app_commands, Interaction
+from discord import Interaction, app_commands
 from discord.ext import commands
+from wavelink import Queue
+
 from config.constants import Colors, Emojis
-from core.player import LoopMode
-from types import SimpleNamespace
+from core.player import LoopMode, PlayerState
 from ui.embeds import (
     cleanup_updater,
     create_error_embed,
@@ -20,6 +20,7 @@ from ui.embeds import (
     now_playing_updater,
     send_now_playing_message,
 )
+from utils.formatters import format_duration
 
 logger = logging.getLogger(__name__)
 
@@ -91,11 +92,17 @@ class HarmonyPlayer(wavelink.Player):
         self.controller_message = None
         self._handling_track_end = False
         self._handling_track_start = False
-        self.state = SimpleNamespace(
-            loop_mode=LoopMode.NONE,
-            autoplay=False
-        )
 
+        # ✅ Правильная инициализация state
+        self.state = PlayerState(
+            bass_boost=False,
+            nightcore=False,
+            vaporwave=False,
+            loop_mode=LoopMode.NONE,
+            autoplay=False,
+            volume_before_effects=100
+        )
+ 
     @property
     def is_paused(self) -> bool:
         return getattr(self, 'paused', False)
@@ -119,6 +126,48 @@ class HarmonyPlayer(wavelink.Player):
             )
         except Exception:
             return False
+
+    async def set_effects(self, bass: bool = None, nightcore: bool = None, vaporwave: bool = None):
+        filters = wavelink.Filters()
+
+        # Обновляем состояние эффектов
+        if bass is not None:
+            self.state.bass_boost = bass
+        if nightcore is not None:
+            self.state.nightcore = nightcore
+        if vaporwave is not None:
+            self.state.vaporwave = vaporwave
+
+        # Бассбуст (настройка частотных полос вручную)
+        if self.state.bass_boost:
+            filters.equalizer = wavelink.Equalizer.from_levels(
+                0.6, 0.7, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+            )
+
+        # Найткор
+        if self.state.nightcore:
+            filters.timescale = wavelink.Timescale(speed=1.2, pitch=1.2)
+
+        # Вейпорвейв
+        if self.state.vaporwave:
+            filters.timescale = wavelink.Timescale(speed=0.8, pitch=0.8)
+            filters.equalizer = wavelink.Equalizer.from_levels(
+                -0.2, -0.2, -0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+            )
+
+        await self.set_filters(filters)
+
+    async def _start_idle_timer(self, timeout: int = 300):  # 300 секунд = 5 минут
+        if self._auto_leave_task:
+            self._auto_leave_task.cancel()
+
+        async def idle_disconnect():
+            await asyncio.sleep(timeout)
+            if not self.current and self.is_connected_safely:
+                await self.disconnect()
+                logger.info("[Idle Timer] Disconnected from voice channel due to inactivity.")
+
+        self._auto_leave_task = asyncio.create_task(idle_disconnect())
 
     async def show_queue(self, interaction: discord.Interaction, limit: int = 10) -> None:
         try:
@@ -202,17 +251,22 @@ class HarmonyPlayer(wavelink.Player):
         try:
             if self.state.loop_mode == LoopMode.TRACK and self.current:
                 return await self.play_track(self.current)
+
             if self.state.loop_mode == LoopMode.QUEUE and self.current:
                 self.queue.put(self.current)
+
             if self.queue.is_empty:
                 if self.state.autoplay and self.current:
                     recommended = await self._get_autoplay_track()
                     if recommended:
                         return await self.play_track(recommended)
-                self._start_idle_timer()
+
+                await self._start_idle_timer()  # 🔧 Добавлен await
                 return
+
             next_track = self.queue.get()
             await self.play_track(next_track)
+
         except Exception as e:
             logger.error(f"[do_next error] {e}")
 
@@ -257,14 +311,6 @@ class HarmonyPlayer(wavelink.Player):
             if self._auto_leave_task and not self._auto_leave_task.done():
                 self._auto_leave_task.cancel()
                 self._auto_leave_task = None
-            if self.view:
-                try:
-                    if hasattr(self.view, 'destroy'):
-                        self.view.destroy()
-                except Exception as e:
-                    logger.warning(f"View destroy failed: {e}")
-                finally:
-                    self.view = None
             if self.is_connected_safely:
                 await self.disconnect()
         except Exception as e:
@@ -299,8 +345,6 @@ class Music(commands.Cog):
                 return results if results else None
             else:
                 sources = [
-                    (wavelink.TrackSource.YouTube, "ytsearch:"),
-                    (wavelink.TrackSource.Spotify, "spsearch:"),
                     (wavelink.TrackSource.SoundCloud, "scsearch:")
                 ]
                 for source, prefix in sources:
@@ -403,6 +447,7 @@ class Music(commands.Cog):
             if isinstance(results, wavelink.Playlist):
                 added_count = 0
                 for track in results.tracks:
+                    track.requester = interaction.user  # Set requester
                     vc.queue.put(track)
                     added_count += 1
                 embed = discord.Embed(
@@ -422,6 +467,7 @@ class Music(commands.Cog):
                             logger.warning(f"Failed to send now playing message: {e}")
             else:
                 track = results[0]
+                track.requester = interaction.user  # Set requester
                 logger.info(f"Found track: {track.title} by {track.author}")
                 if vc.playing or vc.paused or vc.current:
                     vc.queue.put(track)
@@ -463,16 +509,70 @@ class Music(commands.Cog):
         try:
             player: HarmonyPlayer = payload.player
             if not player or not isinstance(player, HarmonyPlayer):
+                logger.warning("No valid player in track end event")
                 return
             if player._is_destroyed:
+                logger.info("Player is destroyed, skipping track end handling")
                 return
+
             logger.info(f"Track ended: {payload.track.title if payload.track else 'Unknown'}")
             logger.debug(f"End reason: {payload.reason}")
+
+            # 🎯 Обновить эмбед для завершенного трека
+            if payload.track and hasattr(player, "now_playing_message") and player.now_playing_message:
+                track = payload.track
+                requester = getattr(track, "requester", None)
+                duration = format_duration(track.length)
+
+                artist = getattr(track, 'author', 'Неизвестный исполнитель')
+                title = getattr(track, 'title', 'Неизвестный трек')
+                uri = getattr(track, 'uri', '')  # Получить URL трека
+                thumbnail = getattr(track, 'artwork', None) or getattr(track, 'thumbnail', None)
+                requester_name = requester.display_name if requester else 'shane4kaa'
+
+                # Создать эмбед с названием трека как гиперссылкой
+                embed = discord.Embed(
+                    title=artist,
+                    description=f"**[{title}]({uri})**\n\n**> Статус:\n** Прослушано ({duration}) — {requester_name}" if uri else f"**{title}**\n\n**> Статус:\n** Прослушано ({duration}) — {requester_name}",
+                    color=0x2B2D31
+                )
+                if thumbnail:
+                    embed.set_thumbnail(url=thumbnail)
+
+                try:
+                    logger.info(f"Updating now_playing_message for {title} in guild {player.guild.id}")
+                    # Сохранять view, если очередь не пуста, иначе убрать
+                    view = player.view if not player.queue.is_empty else None
+                    await player.now_playing_message.edit(embed=embed, view=view)
+                except Exception as e:
+                    logger.warning(f"Could not edit finished track embed: {e}")
+
+            # ▶️ Обработать следующий трек или пустую очередь
             if payload.reason in ("finished", "stopped", "cleanup"):
-                await player.do_next()
+                if not player.queue.is_empty:
+                    next_track = await player.queue.get_wait()
+                    await player.play(next_track)
+                    return
+
+                # ❌ Очередь пуста — отправить отдельный эмбед
+                if player.text_channel:
+                    empty_queue_embed = discord.Embed(
+                        description="—・Пустая очередь сервера\nЯ покинула канал, потому что в очереди не осталось треков",
+                        color=0x2B2D31
+                    )
+                    try:
+                        logger.info(f"Sending empty queue embed in guild {player.guild.id}")
+                        await player.text_channel.send(embed=empty_queue_embed)
+                    except Exception as e:
+                        logger.warning(f"Could not send empty queue embed: {e}")
+
+                logger.info("Queue empty, keeping updated embed")
+                await player._start_idle_timer()  # Запустить таймер бездействия
+
         except Exception as e:
             logger.error(f"Track end handler failed: {e}")
             traceback.print_exc()
+
 
     @commands.Cog.listener()
     async def on_wavelink_track_start(self, payload: wavelink.TrackStartEventPayload) -> None:

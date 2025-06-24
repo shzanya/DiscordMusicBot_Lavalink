@@ -19,7 +19,7 @@ class MusicPlayerView(ui.View):
         message: Optional[discord.Message] = None, 
         requester: Optional[Union[discord.Member, discord.User]] = None
     ):
-        super().__init__(timeout=300)
+        super().__init__(timeout=None)  # Persistent view
         self.player = player
         self.message = message
         self.requester = requester

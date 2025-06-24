@@ -5,7 +5,6 @@ from typing import Optional
 from dataclasses import dataclass
 import logging
 import asyncio
-
 from config.settings import Settings
 from config.constants import Colors
 
@@ -17,12 +16,12 @@ class LoopMode(Enum):
 
 @dataclass
 class PlayerState:
-    oop_mode: LoopMode = LoopMode.NONE
+    loop_mode: LoopMode = LoopMode.NONE
     autoplay: bool = True
     bass_boost: bool = False
     nightcore: bool = False
     vaporwave: bool = False
-    volume_before_effects: int = 75
+    volume_before_effects: int = 100
 
 class HarmonyPlayer(wavelink.Player):
     def __init__(self, *args, **kwargs):
@@ -33,6 +32,13 @@ class HarmonyPlayer(wavelink.Player):
         self.controller_message: Optional[discord.Message] = None
         self.idle_task: Optional[asyncio.Task] = None
         self.logger = logging.getLogger("HarmonyPlayer")
+
+        # Гарантированно определяем все эффекты
+        self.state = PlayerState()(
+            bass_boost=False,
+            nightcore=False,
+            vaporwave=False
+        )
 
     async def play_track(self, track: wavelink.Playable, **kwargs):
         if not self.guild:
