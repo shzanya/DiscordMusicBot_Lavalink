@@ -1,9 +1,10 @@
+
 import discord
 from discord.ext import commands
-from typing import Optional
-from config.constants import Emojis, Colors
-from utils.formatters import format_duration
+
+from config.constants import Colors, Emojis
 from ui.embeds import create_error_embed, create_queue_embed
+
 
 class QueueCommands(commands.Cog, name="📋 Очередь"):
     """📋 Команды управления очередью воспроизведения"""

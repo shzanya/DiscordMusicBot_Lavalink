@@ -37,19 +37,18 @@ class HarmonyPlayer(wavelink.Player):
         self.idle_task: Optional[asyncio.Task] = None
 
     async def play_track(self, track: wavelink.Playable, **kwargs):
-        """▶️ Воспроизведение трека с логикой"""
         if self.current:
             self.history.put(self.current)
 
         await self.play(track, **kwargs)
 
-        # Обновление контроллера
+        # 🔁 отложенный импорт (чтобы избежать circular import)
         if self.controller_message:
-            from ui.views import MusicControllerView
+            from ui.views import MusicPlayerView
             from ui.embeds import create_now_playing_embed
 
             embed = create_now_playing_embed(track, self)
-            view = MusicControllerView(self)
+            view = MusicPlayerView(self)
 
             try:
                 await self.controller_message.edit(embed=embed, view=view)

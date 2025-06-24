@@ -1,15 +1,26 @@
-from discord import ui
-import discord
-from core.player import HarmonyPlayer
-from config.constants import Emojis 
-from utils.formatters import format_duration
 from typing import Optional
 
-class MusicControllerView(ui.View):
-    def __init__(self, player: HarmonyPlayer, message: Optional[discord.Message] = None):
+import discord
+from discord import ui
+
+from config.constants import Emojis
+from core.player import HarmonyPlayer
+from utils.formatters import format_duration
+
+from .track_select import TrackSelect
+
+
+class MusicPlayerView(ui.View):
+    def __init__(self, player: HarmonyPlayer, message: Optional[discord.Message] = None, requester: Optional[discord.User] = None):
         super().__init__(timeout=None)
         self.player = player
         self.message = message
+        self.requester = requester
+
+        # Добавляем селект с треками в View
+        self.add_item(TrackSelect(player, requester))
+
+    # Кнопки из твоего MusicControllerView — копируешь сюда все методы с декоратором @ui.button
 
     @ui.button(emoji=Emojis.NK_RANDOM, style=discord.ButtonStyle.secondary, custom_id="music:shuffle")
     async def shuffle_button(self, interaction: discord.Interaction, button: ui.Button):
@@ -21,7 +32,7 @@ class MusicControllerView(ui.View):
 
     @ui.button(emoji=Emojis.NK_BACK, style=discord.ButtonStyle.secondary, custom_id="music:previous")
     async def previous_button(self, interaction: discord.Interaction, button: ui.Button):
-        from ui.embeds import create_now_playing_embed
+        from ui.embed_now_playing import create_now_playing_embed
         if hasattr(self.player, "play_previous"):
             success = await self.player.play_previous()
             if success:
@@ -35,7 +46,7 @@ class MusicControllerView(ui.View):
 
     @ui.button(emoji=Emojis.NK_MUSICPLAY, style=discord.ButtonStyle.secondary, custom_id="music:pause")
     async def pause_button(self, interaction: discord.Interaction, button: ui.Button):
-        from ui.embeds import create_now_playing_embed  # ← добавь
+        from ui.embed_now_playing import create_now_playing_embed
 
         if self.player.paused:
             await self.player.pause(False)
@@ -50,7 +61,7 @@ class MusicControllerView(ui.View):
 
     @ui.button(emoji=Emojis.NK_NEXT, style=discord.ButtonStyle.secondary, custom_id="music:skip")
     async def skip_button(self, interaction: discord.Interaction, button: ui.Button):
-        from ui.embeds import create_now_playing_embed  # ← добавь
+        from ui.embed_now_playing import create_now_playing_embed
 
         await self.player.skip()
         embed = create_now_playing_embed(self.player.current, self.player, interaction.user)

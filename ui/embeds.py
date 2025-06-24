@@ -1,15 +1,14 @@
+import asyncio
+import math
+from typing import Dict, Optional
+
 import discord
 import wavelink
-import math
-import asyncio
-from typing import Optional, Dict
+
 from config.constants import Colors, Emojis
 from core.player import HarmonyPlayer
+from ui.embed_now_playing import create_now_playing_embed, create_progress_bar
 from utils.formatters import format_duration
-from ui.views import MusicControllerView
-
-
-
 
 
 class NowPlayingUpdater:
@@ -60,14 +59,13 @@ class NowPlayingUpdater:
                         # Удаляем проблемное сообщение
                         self.unregister_message(guild_id)
                 
-                await asyncio.sleep(10)  # Обновляем каждые 10 секунд
+                await asyncio.sleep(3)  # Reduced from 10 to 3 seconds for smoother updates
                 
         except asyncio.CancelledError:
             pass
         except Exception as e:
             print(f"[DEBUG] Update loop error: {e}")
- 
-    
+
     async def _update_message(self, guild_id: int, info: dict):
         message = info['message']
         player = info['player']
@@ -79,110 +77,34 @@ class NowPlayingUpdater:
         current_position = int(player.position)
         current_track = player.current
 
+        # Force update if track changed
         force_update = False
         if info['track'] != current_track:
             info['track'] = current_track
             force_update = True
 
-        if not force_update and abs(current_position - info['last_update']) < 5:
+        # Update every 1 second instead of 2+ for smoother progress
+        if not force_update and abs(current_position - info['last_update']) < 1:
             return
 
         info['last_update'] = current_position
 
         requester = info['requester']
         embed = create_now_playing_embed(current_track, player, requester)
-
         try:
-            # Оптимизация: сравнение с прошлым embed
-            old_embed = message.embeds[0] if message.embeds else None
-            if not old_embed or old_embed.description != embed.description:
-                await message.edit(embed=embed)
+            # Always update - removed comparison that was blocking updates
+            await message.edit(embed=embed)
         except discord.NotFound:
             self.unregister_message(guild_id)
         except discord.Forbidden:
             self.unregister_message(guild_id)
+        except Exception as e:
+            print(f"[DEBUG] Message edit error: {e}")
+        # Don't unregister on temporary errors
 
 
 # Глобальный экземпляр updater
 now_playing_updater = NowPlayingUpdater()
-
-
-def create_now_playing_embed(track: wavelink.Playable, player: HarmonyPlayer, requester: discord.Member) -> discord.Embed:
-    """🎵 Создание embed для текущего трека в точном стиле примера"""
-   
-    # Получаем информацию о треке
-    artist = getattr(track, 'author', 'Неизвестный исполнитель')
-    title = getattr(track, 'title', 'Неизвестный трек')
-    uri = getattr(track, 'uri', '')
-   
-    # Создаем ссылку на трек (если есть)
-    track_link = f"**[{title}]({uri})**" if uri else f"**{title}**"
-   
-    # Формируем прогресс-бар (точно как в примере - 9 сегментов)
-    position = player.position
-    duration = track.length
-    progress_bar = create_progress_bar(position, duration, paused=player.paused, length=9)
-   
-    # Форматируем время
-    current_time = format_duration(int(position))
-    total_time = format_duration(int(duration)) if duration else "∞"
-   
-    # Описание точно как в примере
-    description = f"{track_link}\n\n"
-    description += f"> Запрос от {requester.display_name}:\n"
-    description += f"{progress_bar}\n\n"
-    description += f"Играет — `[{current_time}/{total_time}]`"
-   
-    # Создаем embed без цвета (как в примере)
-    embed = discord.Embed(
-        title=artist,
-        description=description,
-        color=None
-    )
-   
-    # Добавляем обложку трека
-    if hasattr(track, 'artwork') and track.artwork:
-        embed.set_thumbnail(url=track.artwork)
-    elif hasattr(track, 'thumbnail') and track.thumbnail:
-        embed.set_thumbnail(url=track.thumbnail)
-   
-    return embed
-
-
-def create_progress_bar(position: float, duration: float, paused: bool = False, length: int = 10) -> str:
-    """🎛️ Создание прогресс-бара с кастомными эмодзи и иконкой в начале"""
-
-    # Плей или пауза эмодзи в начале строки
-    play_icon = Emojis.PROGRESS_PAUSE if paused else Emojis.PROGRESS_PLAY
-
-    # Если длительность неизвестна
-    if duration <= 0:
-        return (
-            play_icon +
-            Emojis.PROGRESS_LINE_START +
-            Emojis.PROGRESS_LINE_EMPTY * (length - 1) +
-            Emojis.PROGRESS_LINE_END
-        )
-
-    # Считаем прогресс
-    progress = min(length, max(0, int((position / duration) * length)))
-
-    # Начало: пустое или заполненное
-    if progress == 0:
-        bar = Emojis.PROGRESS_LINE_START
-    else:
-        bar = Emojis.PROGRESS_LINE_START_FULL
-        bar += Emojis.PROGRESS_LINE_FULL * (progress - 1)
-
-    # Добавляем пустые сегменты
-    empty_segments = length - progress
-    bar += Emojis.PROGRESS_LINE_EMPTY * empty_segments
-
-    # Завершение
-    bar += Emojis.PROGRESS_LINE_END
-
-    # Возвращаем бар с иконкой плей/пауза в начале
-    return play_icon + bar
 
 
 async def send_now_playing_message(channel, track: wavelink.Playable, player: HarmonyPlayer, requester: discord.Member) -> discord.Message:
@@ -191,7 +113,9 @@ async def send_now_playing_message(channel, track: wavelink.Playable, player: Ha
     embed = create_now_playing_embed(track, player, requester)
 
     # Временно создаём view без message
-    view = MusicControllerView(player, None)
+    from ui.views import MusicPlayerView
+
+    view = MusicPlayerView(player, None)
 
     # Отправляем сообщение
     message = await channel.send(embed=embed, view=view)
