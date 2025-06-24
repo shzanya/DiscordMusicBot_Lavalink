@@ -67,11 +67,11 @@ class Emojis:
 class Colors:
     """🎨 Цвета для embed'ов"""
     
-    PRIMARY = 0x7289DA      # Discord Blurple
-    SUCCESS = 0x43B581      # Зеленый
-    WARNING = 0xFAA61A      # Желтый
-    ERROR = 0xF04747        # Красный
-    INFO = 0x5865F2         # Синий
-    MUSIC = 0xFF6B9D        # Розовый
-    PREMIUM = 0xFFD700      # Золотой
-    SPOTIFY = 0x1DB954      # Spotify зеленый
+    PRIMARY = 0x2B2D31     # Discord Blurple
+    SUCCESS = 0x2B2D31      # Зеленый
+    WARNING = 0x2B2D31     # Желтый
+    ERROR = 0xEA5455      # Красный
+    INFO = 0x2B2D31       # Синий
+    MUSIC = 0x2B2D31       # Розовый
+    PREMIUM = 0x2B2D31      # Золотой
+    SPOTIFY = 0x2B2D31      # Spotify зеленый

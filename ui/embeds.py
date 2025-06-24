@@ -127,24 +127,30 @@ now_playing_updater = NowPlayingUpdater()
 async def send_now_playing_message(channel, track: wavelink.Playable, player: HarmonyPlayer, requester: discord.Member) -> discord.Message:
     """Отправка сообщения с автообновлением и кнопками управления"""
 
+    from ui.views import MusicPlayerView
     embed = create_now_playing_embed(track, player, requester)
 
-    from ui.views import MusicPlayerView
-
-    # Создаем view
+    # Создаем view без message
     view = MusicPlayerView(player, None, requester)
 
-    # Отправляем embed с view ОДИН РАЗ
+    # Сохраняем TrackSelect
+    select = view._select
+    buttons = [item for item in view.children if item is not select]
+
+    # Переупорядочиваем: сначала select, потом кнопки
+    view.clear_items()
+    view.add_item(select)
+    for button in buttons:
+        view.add_item(button)
+
+    # Отправляем embed с view
     message = await channel.send(embed=embed, view=view)
 
-    # Обновляем view (т.к. теперь у неё есть message)
+    # Привязываем message к view
     view.message = message
-    player.view = view  # <-- если нужно
+    player.view = view
 
-    # Обновляем сообщение с view
-    await message.edit(view=view)
-
-    # Регистрируем для автообновления
+    # Регистрируем автообновление
     await now_playing_updater.register_message(
         channel.guild.id,
         message,

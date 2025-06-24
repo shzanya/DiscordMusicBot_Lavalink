@@ -36,7 +36,7 @@ def create_progress_bar(position: float, duration: float, paused: bool = False, 
 def create_now_playing_embed(track: wavelink.Playable, player: HarmonyPlayer, requester: discord.Member) -> discord.Embed:
     """Create now playing embed with comprehensive error handling"""
     if not track:
-        return discord.Embed(title="Нет текущего трека", color=discord.Color.dark_gray())
+        return discord.Embed(title="Нет текущего трека", color=0x2B2D31())
 
     # Safely get track attributes
     artist = getattr(track, 'author', None) or 'Неизвестный исполнитель'
@@ -84,7 +84,7 @@ def create_now_playing_embed(track: wavelink.Playable, player: HarmonyPlayer, re
     embed = discord.Embed(
         title=artist,
         description=description,
-        color=discord.Color.green()
+        color=0x2B2D31
     )
 
     # Add thumbnail safely
