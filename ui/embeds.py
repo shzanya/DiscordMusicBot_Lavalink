@@ -12,24 +12,27 @@ from utils.formatters import format_duration
 
 
 class NowPlayingUpdater:
-    """Класс для автоматического обновления embed с информацией о воспроизведении"""
+    """Fixed updater class with proper error handling"""
     
     def __init__(self):
-        self.active_messages: Dict[int, dict] = {}  # guild_id -> message_info
+        self.active_messages: Dict[int, dict] = {}
         self.update_task = None
         
     def start_updater(self):
-        """Запуск фоновой задачи обновления"""
+        """Start background update task"""
         if self.update_task is None or self.update_task.done():
             self.update_task = asyncio.create_task(self._update_loop())
     
     def stop_updater(self):
-        """Остановка фоновой задачи"""
+        """Stop background update task"""
         if self.update_task and not self.update_task.done():
             self.update_task.cancel()
     
     async def register_message(self, guild_id: int, message: discord.Message, player: HarmonyPlayer, track: wavelink.Playable, requester: discord.Member):
-        """Регистрация сообщения для автообновления"""
+        """Register message for auto-updating"""
+        if not message or not player:
+            return
+            
         self.active_messages[guild_id] = {
             'message': message,
             'player': player,
@@ -40,7 +43,7 @@ class NowPlayingUpdater:
         self.start_updater()
     
     def unregister_message(self, guild_id: int):
-        """Удаление сообщения из автообновления"""
+        """Remove message from auto-updating"""
         if guild_id in self.active_messages:
             del self.active_messages[guild_id]
         
@@ -48,62 +51,76 @@ class NowPlayingUpdater:
             self.stop_updater()
     
     async def _update_loop(self):
-        """Основной цикл обновления"""
+        """Main update loop with comprehensive error handling"""
         try:
             while self.active_messages:
-                for guild_id, info in list(self.active_messages.items()):
+                items = list(self.active_messages.items())
+                
+                for guild_id, info in items:
                     try:
                         await self._update_message(guild_id, info)
                     except Exception as e:
                         print(f"[DEBUG] Update error for guild {guild_id}: {e}")
-                        # Удаляем проблемное сообщение
                         self.unregister_message(guild_id)
                 
-                await asyncio.sleep(3)  # Reduced from 10 to 3 seconds for smoother updates
+                await asyncio.sleep(3)
                 
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            print(f"[DEBUG] Update loop error: {e}")
+            print(f"[DEBUG] Critical update loop error: {e}")
 
     async def _update_message(self, guild_id: int, info: dict):
-        message = info['message']
-        player = info['player']
-
-        if not player.playing or not player.current:
-            self.unregister_message(guild_id)
-            return
-
-        current_position = int(player.position)
-        current_track = player.current
-
-        # Force update if track changed
-        force_update = False
-        if info['track'] != current_track:
-            info['track'] = current_track
-            force_update = True
-
-        # Update every 1 second instead of 2+ for smoother progress
-        if not force_update and abs(current_position - info['last_update']) < 1:
-            return
-
-        info['last_update'] = current_position
-
-        requester = info['requester']
-        embed = create_now_playing_embed(current_track, player, requester)
+        """Update single message with safety checks"""
         try:
-            # Always update - removed comparison that was blocking updates
+            message = info.get('message')
+            player = info.get('player')
+
+            if not message or not player:
+                self.unregister_message(guild_id)
+                return
+
+            # Check if player is valid and playing
+            if not hasattr(player, 'playing') or not player.playing or not hasattr(player, 'current') or not player.current:
+                self.unregister_message(guild_id)
+                return
+
+            # Get position safely
+            try:
+                current_position = int(getattr(player, 'position', 0) or 0)
+            except Exception:
+                current_position = 0
+
+            current_track = player.current
+
+            # Force update if track changed
+            force_update = False
+            if info.get('track') != current_track:
+                info['track'] = current_track
+                force_update = True
+
+            # Update timing check
+            last_update = info.get('last_update', 0)
+            if not force_update and abs(current_position - last_update) < 1:
+                return
+
+            info['last_update'] = current_position
+
+            # Create and send updated embed
+            requester = info.get('requester')
+            embed = create_now_playing_embed(current_track, player, requester)
             await message.edit(embed=embed)
+            
         except discord.NotFound:
             self.unregister_message(guild_id)
         except discord.Forbidden:
             self.unregister_message(guild_id)
+        except discord.HTTPException as e:
+            print(f"[DEBUG] HTTP error for guild {guild_id}: {e}")
         except Exception as e:
-            print(f"[DEBUG] Message edit error: {e}")
-        # Don't unregister on temporary errors
+            print(f"[DEBUG] Update error for guild {guild_id}: {e}")
 
-
-# Глобальный экземпляр updater
+# Глобальный экземпляр
 now_playing_updater = NowPlayingUpdater()
 
 
@@ -112,21 +129,22 @@ async def send_now_playing_message(channel, track: wavelink.Playable, player: Ha
 
     embed = create_now_playing_embed(track, player, requester)
 
-    # Временно создаём view без message
     from ui.views import MusicPlayerView
 
-    view = MusicPlayerView(player, None)
+    # Создаем view
+    view = MusicPlayerView(player, None, requester)
 
-    # Отправляем сообщение
+    # Отправляем embed с view ОДИН РАЗ
     message = await channel.send(embed=embed, view=view)
 
-    # Привязываем сообщение к view (после отправки)
-    view.message = message
-
     # Обновляем view (т.к. теперь у неё есть message)
+    view.message = message
+    player.view = view  # <-- если нужно
+
+    # Обновляем сообщение с view
     await message.edit(view=view)
 
-    # Регистрируем сообщение для автообновления
+    # Регистрируем для автообновления
     await now_playing_updater.register_message(
         channel.guild.id,
         message,

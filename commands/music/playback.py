@@ -1,9 +1,14 @@
+import asyncio
+import re
+import traceback
+
 import discord
 import wavelink
-from discord import app_commands , Interaction
+from discord import Interaction, app_commands
 from discord.ext import commands
+from typing import Optional
+from cachetools import TTLCache
 from config.constants import Colors, Emojis
-import traceback
 from ui.embeds import (
     cleanup_updater,
     create_error_embed,
@@ -11,7 +16,6 @@ from ui.embeds import (
     now_playing_updater,
     send_now_playing_message,
 )
-from ui.views import MusicPlayerView
 
 
 class HarmonyPlayer(wavelink.Player):
@@ -20,81 +24,204 @@ class HarmonyPlayer(wavelink.Player):
         self.previous = None
         self._current_track = None
         self.history = []
+        self.max_history_size = 25
+        self.view: Optional[discord.ui.View] = None
+        self.queue_message: Optional[discord.Message] = None  # для отображения очереди
+        self.channel: Optional[discord.TextChannel] = None  # канал для embed'ов
+
+    @property
+    def is_paused(self):
+        return getattr(self, '_paused', False)
+
     @property
     def current_track(self):
         return self._current_track
-    @property  
+
+    @property
     def current(self):
         return self._current_track
-    
-    async def play_track(self, track: wavelink.Playable):
-        if self._current_track:
-            self.history.append(self._current_track)
+
+    async def on_voice_state_update(self, data):
+        try:
+            await super().on_voice_state_update(data)
+        except AssertionError:
+            print(f"[Wavelink] Игнорируем destroy без guild: {self}")
+
+    async def _destroy(self):
+        if not getattr(self, "guild", None):
+            print("[DEBUG] Пропущен _destroy — self.guild is None")
+            return
+        await super()._destroy()
+
+    async def show_queue(self, interaction: discord.Interaction, limit: int = 10):
+        if self.queue.is_empty:
+            return await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="Очередь пуста",
+                    description="Добавьте треки с помощью `/play`.",
+                    color=Colors.WARNING
+                ),
+                ephemeral=True
+            )
+
+        description = ""
+        for i, track in enumerate(list(self.queue)[:limit], start=1):
+            description += f"**{i}.** {track.author} — {track.title}\n"
+
+        remaining = self.queue.count - limit
+        if remaining > 0:
+            description += f"\nИ ещё **{remaining}** трек(ов)..."
+
+        embed = discord.Embed(
+            title="🎶 Очередь воспроизведения",
+            description=description,
+            color=Colors.PRIMARY
+        )
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def play_track(self, track):
+        self._add_to_history(track)
         self._current_track = track
-        await self.play(track)
+        if not self.guild:
+            print("[ERROR] Невозможно воспроизвести: self.guild is None")
+            return
+        try:
+            await self.play(track)
+        except AssertionError:
+            print("[ERROR] Ошибка воспроизведения — self.guild отсутствует.")
+            return
 
-    async def skip(self):
-        if not self.queue.is_empty:
-            next_track = self.queue.get()
-            await self.play_track(next_track)
-            if self.guild and self.guild.id in now_playing_updater.active_messages:
-                info = now_playing_updater.active_messages[self.guild.id]
-                message = info['message']
-                requester = info['requester']
-                embed = create_now_playing_embed(next_track, self, requester)
-                try:
-                    await message.edit(embed=embed)
-                except Exception:
-                    now_playing_updater.unregister_message(self.guild.id)
-        else:
-            self.previous = self._current_track
-            self._current_track = None
-            await self.stop()
-            if self.guild:
-                now_playing_updater.unregister_message(self.guild.id)
+        if self.view and hasattr(self.view, 'refresh_select_menu'):
+            try:
+                await self.view.refresh_select_menu()
+            except Exception as e:
+                print(f"[ERROR] View refresh failed: {e}")
 
-    async def play_previous(self):
-        if self.previous:
-            current = self._current_track
-            await self.play_track(self.previous)
-            self.previous = current
-            if self.guild and self.guild.id in now_playing_updater.active_messages:
-                info = now_playing_updater.active_messages[self.guild.id]
-                message = info['message']
-                requester = info['requester']
-                embed = create_now_playing_embed(self._current_track, self, requester)
-                try:
-                    await message.edit(embed=embed)
-                except Exception:
-                    now_playing_updater.unregister_message(self.guild.id)
-            return True
-        return False
+        await self._update_now_playing(track)
+        await self._update_queue_embed()
+
+    def _add_to_history(self, track):
+        if track in self.history:
+            self.history.remove(track)
+        self.history.append(track)
+        if len(self.history) > self.max_history_size:
+            self.history.pop(0)
 
     async def do_next(self):
         if not self.queue.is_empty:
             next_track = self.queue.get()
             await self.play_track(next_track)
         else:
-            await self.stop()
+            self._current_track = None
+            await self._update_now_playing(None)
+            await self._update_queue_embed()
+
+            # Авто-лив через 5 минут
+            async def leave_later():
+                await asyncio.sleep(300)
+                if not self.playing and not self.queue and self.guild.voice_client:
+                    await self.guild.voice_client.disconnect()
+
+            asyncio.create_task(leave_later())
+
+    async def skip(self):
+        await self.do_next()
+
+    async def play_previous(self):
+        if self.previous:
+            current = self._current_track
+            await self.play_track(self.previous)
+            self.previous = current
+            return True
+        return False
+
+    async def _update_now_playing(self, track):
+        if not self.guild:
+            return
+        if self.guild.id in now_playing_updater.active_messages:
+            info = now_playing_updater.active_messages[self.guild.id]
+            message = info['message']
+            requester = info['requester']
+
+            if track:
+                embed = create_now_playing_embed(track, self, requester)
+            else:
+                embed = discord.Embed(title="⏹️ Воспроизведение остановлено", color=Colors.MAIN)
+
+            try:
+                await message.edit(embed=embed)
+            except Exception:
+                now_playing_updater.unregister_message(self.guild.id)
+
+    async def _update_queue_embed(self):
+        if not self.channel:
+            return
+
+        queue = list(self.queue)
+        if not queue:
+            desc = "*Очередь пуста*"
+        else:
+            desc = "\n".join(
+                [f"`{i+1}.` **{t.title}** — *{t.author}*" for i, t in enumerate(queue[:10])]
+            )
+            if len(queue) > 10:
+                desc += f"\n...и еще **{len(queue)-10}** треков."
+
+        embed = discord.Embed(
+            title="📜 Очередь треков",
+            description=desc,
+            color=Colors.MAIN
+        )
+
+        try:
+            if self.queue_message:
+                await self.queue_message.edit(embed=embed)
+            else:
+                self.queue_message = await self.channel.send(embed=embed)
+        except Exception as e:
+            print(f"[Queue Embed Error] {e}")
+
+
+
+autocomplete_cache = TTLCache(maxsize=100, ttl=120)
 
 async def track_autocomplete(interaction: Interaction, current: str):
-    if len(current) < 3:
-        await interaction.response.autocomplete([])
-        return
+    query = current.strip().lower()
+    if len(query) < 3:
+        return []
+
+    # Кеш
+    if query in autocomplete_cache:
+        return autocomplete_cache[query]
 
     try:
-        tracks = await wavelink.Playable.search(current, source=wavelink.TrackSource.YouTube)
+        # Ограничиваем до 2 сек, чтобы не словить таймаут Discord
+        tracks = await asyncio.wait_for(
+            wavelink.Playable.search(query, source=wavelink.TrackSource.YouTube),
+            timeout=2.0
+        )
+
         choices = [
             app_commands.Choice(
                 name=f"{t.author} – {t.title}"[:100],
-                value=f"{current}#{i}"
+                value=t.uri
             )
-            for i, t in enumerate(tracks[:5])
+            for t in tracks[:5]
         ]
-        await interaction.response.autocomplete(choices)
+
+        autocomplete_cache[query] = choices
+        return choices
+
+    except asyncio.TimeoutError:
+        print("[autocomplete] Превышен таймаут поиска треков")
+        return []
+
     except Exception as e:
-        print(f"[autocomplete error] {e}")
-        await interaction.response.autocomplete([])
+        print(f"[autocomplete] Ошибка: {e}")
+        return []
+
+
 
 class Music(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -105,97 +232,131 @@ class Music(commands.Cog):
 
     async def _search_tracks(self, query: str):
         try:
-            res = await wavelink.Playable.search(query, source=wavelink.TrackSource.SoundCloud)
-            return res or await wavelink.Playable.search(query, source=wavelink.TrackSource.YouTube)
-        except wavelink.WavelinkException as e:
-            print(f"[Wavelink] Search error: {e}")
+            is_url = re.match(r'^https?://', query, re.IGNORECASE)
+            source = wavelink.TrackSource.YouTube if is_url else wavelink.TrackSource.SoundCloud
+
+            results = await asyncio.wait_for(
+                wavelink.Playable.search(query, source=source),
+                timeout=5.0
+            )
+
+            if not results and not is_url:
+                results = await asyncio.wait_for(
+                    wavelink.Playable.search(query, source=wavelink.TrackSource.YouTube),
+                    timeout=5.0
+                )
+
+            return results
+        except asyncio.TimeoutError:
+            print(f"[Wavelink] Timeout on query: {query}")
             return None
         except Exception:
-            print("[DEBUG] Unexpected error during track search:")
             traceback.print_exc()
             return None
+
+    @app_commands.command(name="queue", description="📄 Показать текущую очередь треков")
+    async def queue(self, interaction: discord.Interaction):
+        vc: HarmonyPlayer = interaction.guild.voice_client
+        if not vc or not isinstance(vc, HarmonyPlayer):
+            return await interaction.response.send_message(
+                embed=create_error_embed("Ошибка", "Бот не в голосовом канале"),
+                ephemeral=True
+            )
+
+        await vc.show_queue(interaction)
+
 
     @app_commands.command(name="play", description="🎵 Искать и воспроизводить музыку")
     @app_commands.describe(поиск="Название, исполнитель или URL")
     @app_commands.autocomplete(поиск=track_autocomplete)
-    async def play(
-        self,
-        interaction: discord.Interaction,
-        поиск: str
-    ):
-        # ——————— Проверка канала ———————
-        if not (vc_channel := interaction.user.voice and interaction.user.voice.channel):
+    async def play(self, interaction: discord.Interaction, поиск: str):
+        # Проверка подключения к голосовому
+        vc_channel = getattr(interaction.user.voice, "channel", None)
+        if not vc_channel:
             return await interaction.response.send_message(
                 embed=create_error_embed("Ошибка", "Вы не в голосовом канале"),
                 ephemeral=True
             )
 
-        # ——————— Подключаемся к лава-ноде ———————
+        # Отложить ответ (обязательно ДО любого запроса в сеть)
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
+        except discord.HTTPException as e:
+            print(f"[DEBUG] interaction.defer() error: {e}")
+            return  # завершить, т.к. интеракция уже недействительна
+
+        # Подключение
         if not (vc := interaction.guild.voice_client):
             try:
                 vc = await vc_channel.connect(cls=HarmonyPlayer)
             except Exception:
-                return await interaction.response.send_message(
-                    embed=create_error_embed("Ошибка", "Не удалось подключиться"),
+                return await interaction.followup.send(
+                    embed=create_error_embed("Ошибка", "Не удалось подключиться к голосовому каналу"),
                     ephemeral=True
                 )
 
-        # ——————— Один defer и только один ———————
-        await interaction.response.defer(ephemeral=True)
+        # Безопасный defer
+        if not interaction.response.is_done():
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.defer(ephemeral=True)
+            except discord.InteractionResponded:
+                pass
 
-        # ——————— Поиск треков ———————
         results = await self._search_tracks(поиск)
         if not results:
             return await interaction.followup.send(
-                embed=create_error_embed("Поиск", f"Ничего не найдено: `{поиск}`"),
+                embed=create_error_embed("Поиск", f"Ничего не найдено по запросу: `{поиск}`"),
                 ephemeral=True
             )
 
-        # ——————— Обработка плейлиста ———————
         if isinstance(results, wavelink.Playlist):
-            for t in results.tracks:
-                vc.queue.put(t)
-            await interaction.followup.send(
-                embed=discord.Embed(
-                    title=f"{Emojis.ADD} Плейлист добавлен",
-                    description=f"**{results.name}** — {len(results.tracks)} треков",
-                    color=Colors.SUCCESS
-                ),
-                ephemeral=True
-            )
-            if not vc.playing:
-                await vc.do_next()
-                await self._start_now_playing_update(interaction.channel, vc, interaction.user)
+            for track in results.tracks:
+                vc.queue.put(track)
 
-        # ——————— Одиночный трек ———————
+            embed = discord.Embed(
+                title=f"{Emojis.ADD} Плейлист добавлен",
+                description=f"**{results.name}** — {len(results.tracks)} треков",
+                color=Colors.SUCCESS
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+            if not vc.playing and not vc.paused:
+                await vc.do_next()
+                await send_now_playing_message(interaction.channel, vc.current, vc, interaction.user)
+
         else:
             track = results[0]
-            if vc.playing:
+            if vc.playing or vc.paused or vc.current:
                 vc.queue.put(track)
+                await interaction.followup.send(
+                    embed=discord.Embed(
+                        description=f"Добавлено в очередь: **{track.author} — {track.title}**",
+                        color=Colors.SUCCESS
+                    ),
+                    ephemeral=True
+                )
             else:
                 await vc.play_track(track)
-                await self._start_now_playing_update(interaction.channel, vc, interaction.user)
+                await send_now_playing_message(interaction.channel, vc.current, vc, interaction.user)
 
-            await interaction.followup.send(
-                embed=discord.Embed(
-                    description=f"Добавлено в очередь: **{track.author} — {track.title}**",
-                    color=Colors.SUCCESS
-                ),
-                ephemeral=True
-            )
+                await interaction.followup.send(
+                    embed=discord.Embed(
+                        description=f"Воспроизводится: **{track.author} — {track.title}**",
+                        color=Colors.SUCCESS
+                    ),
+                    ephemeral=True
+                )
 
-    async def _start_now_playing_update(self, channel, vc, user):
-        embed = create_now_playing_embed(vc.current, vc, user)
-        view = MusicPlayerView(player=vc, requester=user)
-        msg = await channel.send(embed=embed, view=view)
-        view.message = msg
-        await now_playing_updater.register_message(
-            vc.guild.id, msg, vc, vc.current, user
-        )
     @commands.Cog.listener()
     async def on_wavelink_track_end(self, payload: wavelink.TrackEndEventPayload):
-        if payload.player.guild and not payload.player.queue:
-            now_playing_updater.unregister_message(payload.player.guild.id)
+        player: HarmonyPlayer = payload.player
+        try:
+            if player is not None and getattr(player, 'guild', None):
+                await player.do_next()
+        except AssertionError:
+            print("[track_end] player.guild not available (destroyed)")
 
     @commands.Cog.listener()
     async def on_wavelink_track_start(self, payload: wavelink.TrackStartEventPayload):
@@ -224,17 +385,11 @@ class Music(commands.Cog):
                         break
 
             if channel:
-                message = await send_now_playing_message(channel, payload.player.current, payload.player, payload.player.guild.me)
-                if message:
-                    await now_playing_updater.register_message(
-                        guild_id,
-                        message,
-                        payload.player,
-                        payload.player.current,
-                        payload.player.guild.me
-                    )
+                await send_now_playing_message(channel, payload.player.current, payload.player, payload.player.guild.me)
+
         except Exception as e:
-            print(f"[DEBUG] Error creating new message: {e}")
+            print(f"[DEBUG] Error creating now playing message: {e}")
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Music(bot))

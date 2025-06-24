@@ -37,6 +37,10 @@ class HarmonyPlayer(wavelink.Player):
         self.idle_task: Optional[asyncio.Task] = None
 
     async def play_track(self, track: wavelink.Playable, **kwargs):
+        if not self.guild:
+            logging.getLogger("HarmonyPlayer").debug("[DEBUG] Пропущен play_track — self.guild is None")
+            return
+
         if self.current:
             self.history.put(self.current)
 
@@ -56,9 +60,9 @@ class HarmonyPlayer(wavelink.Player):
                 self.controller_message = None
 
     async def do_next(self):
-        """⏭️ Переход к следующему треку"""
-        if self.state.loop_mode == LoopMode.TRACK and self.current:
-            return await self.play_track(self.current)
+        if not self.guild:
+            logging.getLogger("HarmonyPlayer").debug("[DEBUG] Пропущен do_next — self.guild is None")
+            return
 
         if self.state.loop_mode == LoopMode.QUEUE and self.current:
             self.queue.put(self.current)
