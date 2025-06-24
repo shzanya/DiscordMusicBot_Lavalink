@@ -9,16 +9,15 @@ import asyncio
 from config.settings import Settings
 from config.constants import Colors
 
+
 class LoopMode(Enum):
-    """🔄 Режимы повтора"""
-    OFF = "off"
-    TRACK = "track"
-    QUEUE = "queue"
+    NONE = 0
+    TRACK = 1
+    QUEUE = 2
 
 @dataclass
 class PlayerState:
-    """📊 Состояние плеера"""
-    loop_mode: LoopMode = LoopMode.OFF
+    oop_mode: LoopMode = LoopMode.NONE
     autoplay: bool = True
     bass_boost: bool = False
     nightcore: bool = False
@@ -26,8 +25,6 @@ class PlayerState:
     volume_before_effects: int = 75
 
 class HarmonyPlayer(wavelink.Player):
-    """🎵 Кастомный плеер с расширенными возможностями"""
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.queue = wavelink.Queue()
@@ -35,18 +32,22 @@ class HarmonyPlayer(wavelink.Player):
         self.state = PlayerState()
         self.controller_message: Optional[discord.Message] = None
         self.idle_task: Optional[asyncio.Task] = None
+        self.logger = logging.getLogger("HarmonyPlayer")
 
     async def play_track(self, track: wavelink.Playable, **kwargs):
         if not self.guild:
-            logging.getLogger("HarmonyPlayer").debug("[DEBUG] Пропущен play_track — self.guild is None")
+            self.logger.debug("[DEBUG] Пропущен play_track — self.guild is None")
             return
 
         if self.current:
             self.history.put(self.current)
 
-        await self.play(track, **kwargs)
+        try:
+            await self.play(track, **kwargs)
+        except AssertionError:
+            self.logger.error("❌ Ошибка: попытка воспроизведения без guild")
+            return
 
-        # 🔁 отложенный импорт (чтобы избежать circular import)
         if self.controller_message:
             from ui.views import MusicPlayerView
             from ui.embeds import create_now_playing_embed
@@ -61,8 +62,11 @@ class HarmonyPlayer(wavelink.Player):
 
     async def do_next(self):
         if not self.guild:
-            logging.getLogger("HarmonyPlayer").debug("[DEBUG] Пропущен do_next — self.guild is None")
+            self.logger.debug("[DEBUG] Пропущен do_next — self.guild is None")
             return
+
+        if self.state.loop_mode == LoopMode.TRACK and self.current:
+            return await self.play_track(self.current)
 
         if self.state.loop_mode == LoopMode.QUEUE and self.current:
             self.queue.put(self.current)
@@ -80,7 +84,10 @@ class HarmonyPlayer(wavelink.Player):
         await self.play_track(next_track)
 
     async def _get_autoplay_track(self) -> Optional[wavelink.Playable]:
-        """🎯 Получение рекомендованного трека"""
+        if not self.guild or not self.current:
+            self.logger.debug("[DEBUG] _get_autoplay_track пропущен — нет текущего трека или сервера")
+            return None
+
         try:
             if hasattr(self.current, 'recommended'):
                 return await self.current.recommended()
@@ -94,20 +101,17 @@ class HarmonyPlayer(wavelink.Player):
                     return track
 
         except Exception as e:
-            logger = logging.getLogger('HarmonyPlayer')
-            logger.error(f"❌ Ошибка автовоспроизведения: {e}")
+            self.logger.error(f"❌ Ошибка в _get_autoplay_track: {e}")
 
         return None
 
     def _start_idle_timer(self):
-        """⏰ Запуск таймера бездействия"""
         if self.idle_task:
             self.idle_task.cancel()
 
         self.idle_task = asyncio.create_task(self._idle_disconnect())
 
     async def _idle_disconnect(self):
-        """🔌 Отключение по таймауту"""
         try:
             await asyncio.sleep(Settings.AUTO_DISCONNECT_TIMEOUT)
 
@@ -126,7 +130,6 @@ class HarmonyPlayer(wavelink.Player):
             pass
 
     async def set_effects(self, bass: bool = None, nightcore: bool = None, vaporwave: bool = None):
-        """🎚️ Применение аудиоэффектов"""
         filters = wavelink.Filters()
 
         if bass is not None:
@@ -136,17 +139,14 @@ class HarmonyPlayer(wavelink.Player):
         if vaporwave is not None:
             self.state.vaporwave = vaporwave
 
-        # Басбуст
         if self.state.bass_boost:
             filters.equalizer.set_gain(0, 0.6)
             filters.equalizer.set_gain(1, 0.7)
             filters.equalizer.set_gain(2, 0.8)
 
-        # Найткор
         if self.state.nightcore:
             filters.timescale.set(speed=1.2, pitch=1.2)
 
-        # Вейпорвейв
         if self.state.vaporwave:
             filters.timescale.set(speed=0.8, pitch=0.8)
             filters.equalizer.set_gain(0, -0.2)
