@@ -14,6 +14,7 @@ from PIL import Image
 
 class EmojiManager(commands.Cog):
     def __init__(self, bot):
+        self.replace_existing = False #тут TRue если хотите цвета
         self.bot = bot
         self.logger = logging.getLogger(__name__)
         self.session = None
@@ -74,7 +75,8 @@ class EmojiManager(commands.Cog):
         async with self:
             # Получаем все эмодзи один раз
             app_emojis = await self.bot.fetch_application_emojis()
-            existing_names = {emoji.name for emoji in app_emojis}
+            self.existing_emojis_map = {emoji.name: emoji for emoji in app_emojis}
+            existing_names = set(self.existing_emojis_map.keys())
             
             # Фильтруем оригинальные эмодзи (без цветовых суффиксов)
             original_emojis = [
@@ -113,7 +115,13 @@ class EmojiManager(commands.Cog):
         tasks = []
         for emoji in original_emojis:
             new_name = self.generate_color_name(emoji.name, color)
-            if new_name not in existing_names:
+            if new_name in existing_names:
+                if self.replace_existing:
+                    task = self.process_single_emoji(original_emoji=emoji, target_color=target_color, new_name=new_name, old_emoji=self.existing_emojis_map.get(new_name))
+                    tasks.append(task)
+            else:
+                task = self.process_single_emoji(original_emoji=emoji, target_color=target_color, new_name=new_name, old_emoji=None)
+                tasks.append(task)
                 task = self.process_single_emoji(emoji, target_color, new_name)
                 tasks.append(task)
         
@@ -136,32 +144,32 @@ class EmojiManager(commands.Cog):
         self.logger.info(f"✅ {color}: создано {created_count} эмодзи")
         return created_count
 
-    async def process_single_emoji(self, emoji, target_color: Tuple[int, int, int], new_name: str) -> bool:
-        """Обрабатывает одно эмодзи"""
-        try:
-            # Скачиваем изображение
-            original_bytes = await self.download_emoji_optimized(emoji.url)
-            
-            # Перекрашиваем в отдельном потоке
-            loop = asyncio.get_event_loop()
-            recolored_bytes = await loop.run_in_executor(
-                self.executor, 
-                self.recolor_image_optimized, 
-                original_bytes, 
-                target_color
-            )
-            
-            # Проверяем, изменилось ли изображение
-            if self.images_identical(original_bytes, recolored_bytes):
-                return False
-            
-            # Создаем новое эмодзи
-            await self.bot.create_application_emoji(name=new_name, image=recolored_bytes)
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"❌ Ошибка при обработке {emoji.name} -> {new_name}: {e}")
-            return False
+    async def process_single_emoji(self, original_emoji, target_color: Tuple[int, int, int], new_name: str, old_emoji=None) -> bool:
+        original_bytes = await self.download_emoji_optimized(original_emoji.url)
+
+        # Перекрашиваем
+        loop = asyncio.get_event_loop()
+        recolored_bytes = await loop.run_in_executor(
+            self.executor,
+            self.recolor_image_optimized,
+            original_bytes,
+            target_color
+        )
+
+        # Проверка: изображение идентично старому?
+        if old_emoji:
+            try:
+                old_bytes = await self.download_emoji_optimized(old_emoji.url)
+                if self.images_identical(old_bytes, recolored_bytes):
+                    return False  # Нет изменений
+                await old_emoji.delete()  # Удаляем старый эмодзи
+                await asyncio.sleep(0.1)  # Безопасная пауза
+            except Exception as e:
+                self.logger.warning(f"⚠️ Не удалось удалить {new_name}: {e}")
+
+        # Создаем новый эмодзи
+        await self.bot.create_application_emoji(name=new_name, image=recolored_bytes)
+        return True
 
     def generate_color_name(self, base_name: str, color: str) -> str:
         """Генерирует имя для цветного варианта эмодзи"""
@@ -185,120 +193,55 @@ class EmojiManager(commands.Cog):
             raise
 
     def recolor_image_optimized(self, image_bytes: bytes, target_color: Tuple[int, int, int]) -> bytes:
-        """Оптимизированное перекрашивание с сохранением яркости (как Hue в Photoshop)"""
+        """Интенсивная перекраска: тянет цвета к целевому + увеличивает насыщенность"""
         try:
             img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
             
-            # Используем numpy для ускорения если доступен
             try:
                 import numpy as np
-                
                 img_array = np.array(img, dtype=np.float32)
-                alpha_mask = img_array[:, :, 3] > 0
-                
-                if np.any(alpha_mask):
-                    # Конвертируем RGB в HSV для изменения только оттенка
-                    rgb = img_array[:, :, :3] / 255.0
-                    
-                    # Рассчитываем HSV
-                    max_val = np.max(rgb, axis=2)
-                    min_val = np.min(rgb, axis=2)
-                    diff = max_val - min_val
-                    
-                    # Value (яркость) - остается неизменной
-                    v = max_val
-                    
-                    # Saturation - остается неизменной
-                    s = np.where(max_val == 0, 0, diff / max_val)
-                    
-                    # Новый Hue из целевого цвета
-                    target_rgb = np.array(target_color) / 255.0
-                    target_max = np.max(target_rgb)
-                    target_min = np.min(target_rgb)
-                    target_diff = target_max - target_min
-                    
-                    if target_diff == 0:
-                        new_h = 0
-                    else:
-                        if target_max == target_rgb[0]:  # Red
-                            new_h = ((target_rgb[1] - target_rgb[2]) / target_diff) % 6
-                        elif target_max == target_rgb[1]:  # Green
-                            new_h = (target_rgb[2] - target_rgb[0]) / target_diff + 2
-                        else:  # Blue
-                            new_h = (target_rgb[0] - target_rgb[1]) / target_diff + 4
-                        new_h = new_h / 6
-                    
-                    # Конвертируем HSV обратно в RGB с новым оттенком
-                    h = np.full_like(v, new_h)
-                    
-                    # Формула HSV -> RGB
-                    c = v * s
-                    x = c * (1 - np.abs((h * 6) % 2 - 1))
-                    m = v - c
-                    
-                    h_i = (h * 6).astype(int) % 6
-                    
-                    new_rgb = np.zeros_like(rgb)
-                    
-                    # HSV to RGB conversion
-                    mask0 = (h_i == 0)
-                    mask1 = (h_i == 1)
-                    mask2 = (h_i == 2)
-                    mask3 = (h_i == 3)
-                    mask4 = (h_i == 4)
-                    
-                    new_rgb[:, :, 0] = np.where(mask0, c + m, 
-                                      np.where(mask1, x + m,
-                                      np.where(mask2, m,
-                                      np.where(mask3, m,
-                                      np.where(mask4, x + m, c + m)))))
-                    
-                    new_rgb[:, :, 1] = np.where(mask0, x + m,
-                                      np.where(mask1, c + m,
-                                      np.where(mask2, c + m,
-                                      np.where(mask3, x + m,
-                                      np.where(mask4, m, m)))))
-                    
-                    new_rgb[:, :, 2] = np.where(mask0, m,
-                                      np.where(mask1, m,
-                                      np.where(mask2, x + m,
-                                      np.where(mask3, c + m,
-                                      np.where(mask4, c + m, x + m)))))
-                    
-                    # Применяем к непрозрачным пикселям и увеличиваем насыщенность
-                    saturation_boost = 1.3  # Делаем цвета ярче
-                    new_rgb = np.clip(new_rgb * saturation_boost, 0, 1)
-                    
-                    img_array[:, :, :3] = np.where(alpha_mask[:, :, np.newaxis], 
-                                                 new_rgb * 255, 
-                                                 img_array[:, :, :3])
-                
+                alpha = img_array[:, :, 3] > 0
+
+                rgb = img_array[:, :, :3]
+                target_rgb = np.array(target_color, dtype=np.float32)
+
+                # Интенсивное смешивание (тянем каждый цвет к целевому)
+                blend_ratio = 0.85  # 0.0 — ничего не меняем, 1.0 — полный цвет цели
+                recolored_rgb = rgb * (1 - blend_ratio) + target_rgb * blend_ratio
+
+                # Повышаем насыщенность — усиливаем цвета
+                recolored_rgb = np.clip(recolored_rgb * 1.3, 0, 255)
+
+                # Применяем только к непрозрачным пикселям
+                img_array[:, :, :3] = np.where(alpha[:, :, None], recolored_rgb, rgb)
+
                 img = Image.fromarray(img_array.astype(np.uint8), 'RGBA')
-                
+
             except ImportError:
-                # Fallback на PIL с упрощенным алгоритмом
+                # Без NumPy — упрощённое интенсивное перекрашивание
                 pixels = img.load()
                 for x in range(img.width):
                     for y in range(img.height):
                         r, g, b, a = pixels[x, y]
                         if a == 0:
                             continue
-                        
-                        # Сохраняем яркость, меняем оттенок
-                        brightness = max(r, g, b) / 255.0
-                        saturation = (max(r, g, b) - min(r, g, b)) / max(r, g, b) if max(r, g, b) > 0 else 0
-                        
-                        # Применяем новый цвет с сохранением яркости и насыщенности
-                        new_r = int(target_color[0] * brightness * (1 + saturation * 0.3))
-                        new_g = int(target_color[1] * brightness * (1 + saturation * 0.3))
-                        new_b = int(target_color[2] * brightness * (1 + saturation * 0.3))
-                        
-                        pixels[x, y] = (min(255, new_r), min(255, new_g), min(255, new_b), a)
-            
+
+                        blend_ratio = 0.85
+                        new_r = int(r * (1 - blend_ratio) + target_color[0] * blend_ratio)
+                        new_g = int(g * (1 - blend_ratio) + target_color[1] * blend_ratio)
+                        new_b = int(b * (1 - blend_ratio) + target_color[2] * blend_ratio)
+
+                        # Усиление цвета
+                        new_r = min(255, int(new_r * 1.3))
+                        new_g = min(255, int(new_g * 1.3))
+                        new_b = min(255, int(new_b * 1.3))
+
+                        pixels[x, y] = (new_r, new_g, new_b, a)
+
             output = io.BytesIO()
             img.save(output, format='PNG', optimize=True)
             return output.getvalue()
-            
+
         except Exception as e:
             self.logger.error(f"❌ Ошибка перекрашивания: {e}")
             raise

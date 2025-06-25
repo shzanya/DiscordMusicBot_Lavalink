@@ -57,7 +57,6 @@ class Emojis:
         else:
             return "❓"
 
-    # Все emoji через classmethod
     @classmethod
     def NK_BACK(cls): return cls._get_emoji("NK_BACK")
     @classmethod
@@ -75,7 +74,7 @@ class Emojis:
     @classmethod
     def NK_MUSICLINEFULLVISIBLE(cls): return cls._get_emoji("NK_MUSICLINEFULLVISIBLE")
     @classmethod
-    def NK_MUSICLINESTARTFULLVISIBLE(cls): return cls._get_emoji("NK_MUSICLINESTARTFULLVISIBLE")
+    def NK_PB_START_FILL(cls): return cls._get_emoji("NK_PB_START_FILL")
     @classmethod
     def NK_MUSICLINESTARTVISIBLE(cls): return cls._get_emoji("NK_MUSICLINESTARTVISIBLE")
     @classmethod
@@ -101,7 +100,6 @@ class Emojis:
     @classmethod
     def NK_VOLUME(cls): return cls._get_emoji("NK_VOLUME")
 
-# Цвета
 class Colors:
     PRIMARY = 0x2B2D31
     SUCCESS = 0x2B2D31
@@ -112,6 +110,5 @@ class Colors:
     PREMIUM = 0x2B2D31
     SPOTIFY = 0x2B2D31
 
-# Установка цвета
-Emojis.set_color("pink")
+Emojis.set_color("crimson")
 emojis = Emojis

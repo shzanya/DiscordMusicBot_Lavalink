@@ -18,7 +18,7 @@ def create_progress_bar(position: float, duration: float, paused: bool = False, 
     if progress == 0:
         bar = emojis.NK_MUSICLINESTARTVISIBLE()
     else:
-        bar = emojis.NK_MUSICLINESTARTFULLVISIBLE()
+        bar = emojis.NK_PB_START_FILL()
         bar += emojis.NK_MUSICLINEFULLVISIBLE() * (progress - 1)
     bar += emojis.NK_MUSICLINEEMPTY() * (length - progress)
     bar += emojis.NK_MUSICLINEENDVISIBLE()
