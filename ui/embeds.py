@@ -5,7 +5,7 @@ from typing import Dict, Optional
 import discord
 import wavelink
 
-from config.constants import Colors, Emojis
+from config.constants import Colors, emojis
 from core.player import HarmonyPlayer
 from ui.embed_now_playing import create_now_playing_embed, create_progress_bar
 from utils.formatters import format_duration
@@ -124,24 +124,62 @@ class NowPlayingUpdater:
 now_playing_updater = NowPlayingUpdater()
 
 
+def create_queue_embed(
+    guild: discord.Guild,
+    now_playing: wavelink.Playable,
+    queue: list,
+    page: int,
+    total_pages: int,
+    user: discord.User
+) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"—・Очередь сервера {guild.name}",
+        description="",
+        color=Colors.MUSIC
+    )
+
+    # Сейчас играет
+    duration = now_playing.length // 1000
+    minutes = duration // 60
+    seconds = duration % 60
+    requester = getattr(now_playing, "requester", None)
+    requester_name = f"`{requester.display_name}`" if requester else "`Неизвестно`"
+
+    embed.description += f"**Сейчас играет:** [{now_playing.title}]({now_playing.uri}) | `{minutes:02}:{seconds:02}` | {requester_name}\n"
+
+    # Треки на текущей странице
+    items_per_page = 10
+    start = (page - 1) * items_per_page
+    end = start + items_per_page
+    tracks = queue[start:end]
+
+    for i, track in enumerate(tracks, start=start + 1):
+        duration = track.length // 1000
+        minutes = duration // 60
+        seconds = duration % 60
+        requester = getattr(track, "requester", None)
+        requester_name = f"`{requester.display_name}`" if requester else "`Неизвестно`"
+
+        line = f"\n**{i})** [{track.title}]({track.uri}) | `{minutes:02}:{seconds:02}` | {requester_name}"
+        # Убедимся, что не превышаем лимит Discord
+        if len(embed.description) + len(line) > 4096:
+            embed.description += "\n...и другие треки."
+            break
+        embed.description += line
+
+    embed.set_thumbnail(url=user.display_avatar.url)
+    embed.set_footer(text=f"Страница: {page}/{total_pages}")
+    return embed
+
+
+
 async def send_now_playing_message(channel, track: wavelink.Playable, player: HarmonyPlayer, requester: discord.Member) -> discord.Message:
     """Отправка сообщения с автообновлением и кнопками управления"""
-
     from ui.views import MusicPlayerView
     embed = create_now_playing_embed(track, player, requester)
 
     # Создаем view без message
     view = MusicPlayerView(player, None, requester)
-
-    # Сохраняем TrackSelect
-    select = view._select
-    buttons = [item for item in view.children if item is not select]
-
-    # Переупорядочиваем: сначала select, потом кнопки
-    view.clear_items()
-    view.add_item(select)
-    for button in buttons:
-        view.add_item(button)
 
     # Отправляем embed с view
     message = await channel.send(embed=embed, view=view)
@@ -201,74 +239,50 @@ def create_track_embed_spotify_style(track: wavelink.Playable, player: HarmonyPl
     return embed
 
 
-def create_queue_embed_advanced(queue: wavelink.Queue, page: int, current: Optional[wavelink.Playable], player: HarmonyPlayer) -> discord.Embed:
-    """📋 Расширенный embed для очереди"""
-   
+def create_queue_embed(
+    guild: discord.Guild,
+    now_playing: wavelink.Playable,
+    queue: list,
+    page: int,
+    total_pages: int,
+    user: discord.User
+) -> discord.Embed:
     embed = discord.Embed(
-        title=f"{Emojis.QUEUE} Очередь воспроизведения",
-        color=Colors.SPOTIFY
+        title=f"—・Очередь сервера {guild.name}",
+        description=f"**Сейчас играет:** [{now_playing.title}]({now_playing.uri})\n",
+        color=Colors.MUSIC
     )
-   
-    per_page = 10
-    total_tracks = len(queue)
-    total_pages = max(1, math.ceil(total_tracks / per_page))
-    page = max(1, min(page, total_pages))
-   
-    start = (page - 1) * per_page
-    end = start + per_page
-   
-    # Текущий трек
-    if current:
-        position = player.position
-        duration = current.length
-        progress = int((position / duration) * 10) if duration else 0
-        progress_bar = "▰" * progress + "▱" * (10 - progress)
-       
-        current_info = f"**[{current.title}]({getattr(current, 'uri', '')})**\n"
-        current_info += f"*{getattr(current, 'author', 'Неизвестно')}*\n"
-        current_time = format_duration(int(position))
-        total_time = format_duration(int(duration)) if duration else "∞"
-        current_info += f"`{current_time}` {progress_bar} `{total_time}`"
-       
-        embed.add_field(
-            name="🎵 Сейчас играет",
-            value=current_info,
-            inline=False
-        )
-   
-    # Треки в очереди
-    if queue:
-        queue_text = ""
-        for i, track in enumerate(queue[start:end], start=start + 1):
-            duration_str = format_duration(int(track.length)) if hasattr(track, 'length') and track.length else "N/A"
-            queue_text += f"`{i}.` **{track.title}**\n"
-            queue_text += f"    *{getattr(track, 'author', 'Неизвестно')}* • `{duration_str}`\n\n"
-       
-        embed.add_field(
-            name="📋 Следующие треки",
-            value=queue_text or "Очередь пуста",
-            inline=False
-        )
+
+    duration = now_playing.length // 1000
+    minutes = duration // 60
+    seconds = duration % 60
+    requester = getattr(now_playing, "requester", None)
+    requester_name = f"`{requester.display_name}`" if requester else "`Неизвестно`"
+
+    if page == 1:
+        embed.description += f"\n**1)** [{now_playing.title}]({now_playing.uri}) | `{minutes:02}:{seconds:02}` | {requester_name}"
+        start_index = 2
     else:
-        embed.add_field(
-            name="📋 Очередь",
-            value="Пусто",
-            inline=False
-        )
-   
-    # Информация о странице
-    if total_pages > 1:
-        embed.set_footer(text=f"Страница {page}/{total_pages} • {total_tracks} треков")
-    else:
-        embed.set_footer(text=f"{total_tracks} треков в очереди")
-   
+        start_index = 1 + (page - 1) * 10
+
+    for i, track in enumerate(queue, start=start_index):
+        duration = track.length // 1000
+        minutes = duration // 60
+        seconds = duration % 60
+        requester = getattr(track, "requester", None)
+        requester_name = f"`{requester.display_name}`" if requester else "`Неизвестно`"
+        embed.description += f"\n**{i})** [{track.title}]({track.uri}) | `{minutes:02}:{seconds:02}` | {requester_name}"
+
+    embed.set_thumbnail(url=user.display_avatar.url)
+    embed.set_footer(text=f"Страница: {page}/{total_pages}")
     return embed
+
 
 
 def create_error_embed(title: str, description: str) -> discord.Embed:
     """❌ Создание embed для ошибок"""
     return discord.Embed(
-        title=f"{Emojis.ERROR} {title}",
+        title=f"{emojis.ERROR()} {title}",
         description=description,
         color=Colors.ERROR
     )
@@ -277,7 +291,7 @@ def create_error_embed(title: str, description: str) -> discord.Embed:
 def create_success_embed(title: str, description: str) -> discord.Embed:
     """✅ Создание embed для успешных операций"""
     return discord.Embed(
-        title=f"{Emojis.SUCCESS} {title}",
+        title=f"{emojis.SUCCESS()} {title}",
         description=description,
         color=Colors.SUCCESS
     )
@@ -286,7 +300,7 @@ def create_success_embed(title: str, description: str) -> discord.Embed:
 def create_warning_embed(title: str, description: str) -> discord.Embed:
     """⚠️ Создание embed для предупреждений"""
     return discord.Embed(
-        title=f"{Emojis.WARNING} {title}",
+        title=f"{emojis.WARNING()} {title}",
         description=description,
         color=Colors.WARNING
     )
@@ -295,7 +309,7 @@ def create_warning_embed(title: str, description: str) -> discord.Embed:
 def create_info_embed(title: str, description: str) -> discord.Embed:
     """ℹ️ Создание embed для информации"""
     return discord.Embed(
-        title=f"{Emojis.INFO} {title}",
+        title=f"{emojis.INFO()} {title}",
         description=description,
         color=Colors.INFO
     )
@@ -333,11 +347,6 @@ def create_track_embed(track: wavelink.Playable, title: str = None, color = None
         embed.set_thumbnail(url=track.thumbnail)
     
     return embed
-
-
-def create_queue_embed(queue: wavelink.Queue, page: int = 1, current: Optional[wavelink.Playable] = None, player: HarmonyPlayer = None) -> discord.Embed:
-    """📋 Alias для create_queue_embed_advanced для обратной совместимости"""
-    return create_queue_embed_advanced(queue, page, current, player)
 
 
 # Очистка при завершении работы бота

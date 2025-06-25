@@ -5,13 +5,10 @@ import logging
 import os
 from pathlib import Path
 from config.settings import Settings
-from services.database import DatabaseService
 from core.events import EventHandler
 from core.assets import AutoEmojiManager
 
 class HarmonyBot(commands.Bot):
-    """🎵 Основной класс музыкального бота Harmony"""
-    
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
@@ -19,29 +16,22 @@ class HarmonyBot(commands.Bot):
         intents.guilds = True
         
         super().__init__(
-            command_prefix=self._get_prefix,
+            command_prefix=Settings.COMMAND_PREFIX,  # убрал _get_prefix
             intents=intents,
             description="🎵 Современный музыкальный бот для Discord",
             case_insensitive=True,
             strip_after_prefix=True
         )
-        
-        self.db = DatabaseService()
+
+        # self.db = DatabaseService()  <-- Удалено
         self.ready = False
         self.logger = self.get_logger()
         self.synced = False
-        self.loaded_cogs = []  # Список загруженных когов
-
-    async def _get_prefix(self, bot, message: discord.Message):
-        """🔍 Получение префикса для сервера"""
-        if not message.guild:
-            return Settings.COMMAND_PREFIX
-        guild_data = await self.db.get_guild(message.guild.id)
-        return guild_data.prefix if guild_data else Settings.COMMAND_PREFIX
+        self.loaded_cogs = []
+          # Список загруженных когов
 
     async def setup_hook(self):
         """🔧 Настройка бота при запуске"""
-        await self.db.initialize()
         await self.setup_emoji_manager()  # ✅ Вызов
 
     async def setup_emoji_manager(self):
@@ -99,6 +89,9 @@ class HarmonyBot(commands.Bot):
                 'help',
                 'info',
                 'stats'
+            ],
+            'commands/Emoji': [
+                'EmojiManager'
             ]
         }
         
@@ -297,10 +290,6 @@ class HarmonyBot(commands.Bot):
         
         return info
 
-    async def on_guild_join(self, guild):
-        """🎉 Событие присоединения к серверу"""
-        self.logger.info(f"🎉 Присоединился к серверу: {guild.name} ({guild.id})")
-        await self.db.get_guild(guild.id)
 
     async def on_guild_remove(self, guild):
         """👋 Событие покидания сервера"""

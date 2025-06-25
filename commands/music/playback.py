@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import re
-import traceback
 from typing import Dict, List, Optional, Union
 
 import discord
@@ -11,16 +10,15 @@ from discord import Interaction, app_commands
 from discord.ext import commands
 from wavelink import Queue
 
-from config.constants import Colors, Emojis
+from commands.music.effects import AudioEffectsManager, EffectType
+from config.constants import Colors
 from core.player import LoopMode, PlayerState
 from ui.embeds import (
     cleanup_updater,
     create_error_embed,
-    create_now_playing_embed,
-    now_playing_updater,
-    send_now_playing_message,
+    create_queue_embed,
 )
-from utils.formatters import format_duration
+from ui.views import QueueView
 
 logger = logging.getLogger(__name__)
 
@@ -78,31 +76,130 @@ async def track_autocomplete(
 class HarmonyPlayer(wavelink.Player):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.previous: Optional[wavelink.Playable] = None
         self._current_track: Optional[wavelink.Playable] = None
         self.history: list[wavelink.Playable] = []
-        self.max_history_size = 25
+        self.forward_stack: list[wavelink.Playable] = []
+        self.max_history_size = 100
         self.view: Optional[discord.ui.View] = None
         self.queue_message: Optional[discord.Message] = None
         self.text_channel: Optional[discord.TextChannel] = None
         self._auto_leave_task: Optional[asyncio.Task] = None
+        self._update_task: Optional[asyncio.Task] = None
         self._is_destroyed = False
         self.queue = Queue()
-        self.history = Queue()
         self.controller_message = None
         self._handling_track_end = False
         self._handling_track_start = False
-
-        # ✅ Правильная инициализация state
+        self._handling_track_start = False
+        self.playlist_mode: bool = False
+        self.now_playing_message: Optional[discord.Message] = None
         self.state = PlayerState(
-            bass_boost=False,
-            nightcore=False,
-            vaporwave=False,
-            loop_mode=LoopMode.NONE,
-            autoplay=False,
-            volume_before_effects=100
+            bass_boost=False, nightcore=False, vaporwave=False,
+            loop_mode=LoopMode.NONE, autoplay=False, volume_before_effects=100
         )
+    def is_queue_empty(self) -> bool:
+        return len(self.queue) == 0
+    
+
+    async def destroy(self) -> None:
+        self._is_destroyed = True
+        await super().disconnect()
+
+    async def _update_progress_bar(self):
+        """Periodically update now_playing_message with progress bar."""
+        while self.is_connected_safely and self._current_track and not self._is_destroyed:
+            try:
+                if self.now_playing_message:
+                    requester = getattr(self._current_track, "requester", None)
+                    from ui.embed_now_playing import create_now_playing_embed
+                    embed = await create_now_playing_embed(self._current_track, self, requester)
+                    await self.now_playing_message.edit(embed=embed, view=self.view)
+            except discord.HTTPException as e:
+                logger.error(f"Failed to update progress bar: {e}")
+                break
+            except Exception as e:
+                logger.error(f"Unexpected error in update_progress_bar: {e}")
+                break
+            await asyncio.sleep(5)  # Update every 5 seconds
  
+
+    async def on_wavelink_track_start(self, payload: wavelink.TrackStartEventPayload):
+        if self._handling_track_start:
+            return
+        self._handling_track_start = True
+        try:
+            logger.debug(f"Track start event for player {id(self)} in guild {self.guild.id}")
+            await self.apply_saved_effects()
+            track = payload.track
+            if not track or self._is_destroyed:
+                return
+            logger.info(f"Track started: {track.title}")
+        except Exception as e:
+            logger.error(f"Error in on_wavelink_track_start: {e}")
+        finally:
+            self._handling_track_start = False
+
+    async def _update_now_playing_message(self, track: wavelink.Playable, requester=None):
+        for attempt in range(3):
+            try:
+                from ui.embed_now_playing import create_now_playing_embed
+                from ui.views import MusicPlayerView
+                embed = await create_now_playing_embed(track, self, requester)
+
+                # Create new view and ensure its message is set
+                view = MusicPlayerView(self, self.now_playing_message, requester)
+                if self.now_playing_message:
+                    await self.now_playing_message.edit(embed=embed, view=view)
+                    view.message = self.now_playing_message  # Ensure view.message is updated
+                    self.view = view
+                    logger.debug("Updated existing now_playing_message")
+                else:
+                    self.now_playing_message = await self.text_channel.send(embed=embed, view=view)
+                    view.message = self.now_playing_message  # Set view.message for new message
+                    self.view = view
+                    logger.info("Created new now_playing_message")
+                return
+            except discord.HTTPException as e:
+                if e.status == 429 and attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
+                    logger.warning(f"Rate limit hit on attempt {attempt + 1}, retrying after {2 ** attempt}s")
+                    continue
+                logger.error(f"Failed to update now_playing_message: {e}")
+                break
+
+
+    async def play_track(self, track: wavelink.Playable, add_to_history: bool = True, **kwargs):
+        try:
+            if add_to_history and self._current_track:
+                self.history.append(self._current_track)
+                self.history = self.history[-self.max_history_size:]
+                logger.debug(f"Added to history: {self._current_track.title}")
+
+            self.forward_stack.clear()
+            self._current_track = track
+
+            requester = kwargs.pop("requester", None)
+            if requester:
+                track.requester = requester
+
+            await self.play(track, **kwargs)
+            await self._update_now_playing_message(track, requester)
+
+            if self._update_task:
+                self._update_task.cancel()
+            self._update_task = asyncio.create_task(self._update_progress_bar())
+
+            logger.info(f"Playing: {track.title}")
+
+        except Exception as e:
+            logger.error(f"play_track error: {e}")
+
+
+
+    async def apply_saved_effects(self):
+            active_effects = {effect: getattr(self.state, effect.value, False) for effect in EffectType}
+            await AudioEffectsManager.apply_effects(self, active_effects)
+
     @property
     def is_paused(self) -> bool:
         return getattr(self, 'paused', False)
@@ -119,98 +216,47 @@ class HarmonyPlayer(wavelink.Player):
     def is_connected_safely(self) -> bool:
         try:
             return (
-                self.guild is not None and 
-                self.channel is not None and 
+                self.guild is not None and
+                self.channel is not None and
                 not self._is_destroyed and
                 super().connected
             )
         except Exception:
             return False
 
-    async def set_effects(self, bass: bool = None, nightcore: bool = None, vaporwave: bool = None):
-        filters = wavelink.Filters()
+    async def _start_idle_timer(self, timeout: int = 300):
+            if self._auto_leave_task:
+                self._auto_leave_task.cancel()
+            async def idle_disconnect():
+                await asyncio.sleep(timeout)
+                if not self.current and self.is_connected_safely:
+                    await self.disconnect()
+                    logger.info("[Idle Timer] Disconnected from voice channel due to inactivity.")
+            self._auto_leave_task = asyncio.create_task(idle_disconnect())
 
-        # Обновляем состояние эффектов
-        if bass is not None:
-            self.state.bass_boost = bass
-        if nightcore is not None:
-            self.state.nightcore = nightcore
-        if vaporwave is not None:
-            self.state.vaporwave = vaporwave
+    async def show_queue(self, interaction: discord.Interaction, page: int = 1):
+        items_per_page = 10
+        total_tracks = len(self.queue)
+        total_pages = max((total_tracks - 1) // items_per_page + 1, 1)
 
-        # Бассбуст (настройка частотных полос вручную)
-        if self.state.bass_boost:
-            filters.equalizer = wavelink.Equalizer.from_levels(
-                0.6, 0.7, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
-            )
+        if page > total_pages:
+            page = total_pages
 
-        # Найткор
-        if self.state.nightcore:
-            filters.timescale = wavelink.Timescale(speed=1.2, pitch=1.2)
+        start_index = (page - 1) * items_per_page
+        end_index = start_index + items_per_page
+        visible_queue = list(self.queue)[start_index:end_index]  # ⬅️ Обрезка очереди
 
-        # Вейпорвейв
-        if self.state.vaporwave:
-            filters.timescale = wavelink.Timescale(speed=0.8, pitch=0.8)
-            filters.equalizer = wavelink.Equalizer.from_levels(
-                -0.2, -0.2, -0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
-            )
+        embed = create_queue_embed(
+            guild=interaction.guild,
+            now_playing=self.current,
+            queue=visible_queue,  # ⬅️ Используем только текущую страницу
+            page=page,
+            total_pages=total_pages,
+            user=interaction.user
+        )
 
-        await self.set_filters(filters)
-
-    async def _start_idle_timer(self, timeout: int = 300):  # 300 секунд = 5 минут
-        if self._auto_leave_task:
-            self._auto_leave_task.cancel()
-
-        async def idle_disconnect():
-            await asyncio.sleep(timeout)
-            if not self.current and self.is_connected_safely:
-                await self.disconnect()
-                logger.info("[Idle Timer] Disconnected from voice channel due to inactivity.")
-
-        self._auto_leave_task = asyncio.create_task(idle_disconnect())
-
-    async def show_queue(self, interaction: discord.Interaction, limit: int = 10) -> None:
-        try:
-            if self.queue.is_empty:
-                embed = discord.Embed(
-                    title="📭 Очередь пуста",
-                    description="Добавьте треки с помощью /play.",
-                    color=Colors.WARNING
-                )
-                return await interaction.response.send_message(embed=embed, ephemeral=True)
-
-            description_lines = []
-            queue_items = list(self.queue)[:limit]
-            for i, track in enumerate(queue_items, start=1):
-                duration = getattr(track, 'length', 0)
-                duration_str = f" [{self._format_duration(duration)}]" if duration else ""
-                description_lines.append(
-                    f"**{i}.** {track.author} — {track.title}{duration_str}"
-                )
-
-            remaining = self.queue.count - limit
-            if remaining > 0:
-                description_lines.append(f"\n*И ещё **{remaining}** трек(ов)...*")
-
-            embed = discord.Embed(
-                title="🎶 Очередь воспроизведения",
-                description="\n".join(description_lines),
-                color=Colors.PRIMARY
-            )
-            if self.current:
-                embed.add_field(
-                    name="🎵 Сейчас играет",
-                    value=f"{self.current.author} — {self.current.title}",
-                    inline=False
-                )
-
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-        except Exception as e:
-            logger.error(f"Error showing queue: {e}")
-            await interaction.response.send_message(
-                embed=create_error_embed("Ошибка", "Не удалось отобразить очередь"),
-                ephemeral=True
-            )
+        view = QueueView(player=self, user=interaction.user, page=page, total_pages=total_pages)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     def _format_duration(self, milliseconds: int) -> str:
         if not milliseconds:
@@ -219,56 +265,71 @@ class HarmonyPlayer(wavelink.Player):
         minutes = seconds // 60
         seconds = seconds % 60
         return f"{minutes:02d}:{seconds:02d}"
-
-    async def play_track(self, track: wavelink.Playable, **kwargs):
+    async def play_next(self) -> bool:
         try:
-            if self.current:
-                self.history.put(self.current)
-            await self.play(track, **kwargs)
-            if self.controller_message:
-                from ui.embeds import create_now_playing_embed
-                from ui.views import MusicPlayerView
-                embed = create_now_playing_embed(track, self)
-                view = MusicPlayerView(self)
-                try:
-                    await self.controller_message.edit(embed=embed, view=view)
-                except discord.NotFound:
-                    self.controller_message = None
+            if not self.forward_stack or not self.is_connected_safely:
+                logger.debug("No forward stack or not connected")
+                return False
+            if self._current_track:
+                self.history.append(self._current_track)
+                self.history = self.history[-self.max_history_size:]
+            next_track = self.forward_stack.pop()
+            await self.play_track(next_track, requester=getattr(next_track, "requester", None))
+            logger.info(f"Playing next: {next_track.title}")
+            return True
         except Exception as e:
-            logger.error(f"[play_track error] {e}")
+            logger.error(f"play_next failed: {e}")
+            return False
 
-    def _add_to_history(self, track: wavelink.Playable) -> None:
+    async def skip(self) -> None:
+        if getattr(self, "_handling_track_end", False):
+            logger.debug("⚠️ Skip ignored: track end handling in progress")
+            return
+
         try:
-            if track in self.history:
-                self.history.remove(track)
-            self.history.append(track)
-            while len(self.history) > self.max_history_size:
-                self.history.pop(0)
-        except Exception as e:
-            logger.error(f"Error adding track to history: {e}")
-
-    async def do_next(self):
-        try:
-            if self.state.loop_mode == LoopMode.TRACK and self.current:
-                return await self.play_track(self.current)
-
-            if self.state.loop_mode == LoopMode.QUEUE and self.current:
-                self.queue.put(self.current)
-
             if self.queue.is_empty:
-                if self.state.autoplay and self.current:
-                    recommended = await self._get_autoplay_track()
-                    if recommended:
-                        return await self.play_track(recommended)
-
-                await self._start_idle_timer()  # 🔧 Добавлен await
+                logger.info("🚫 Queue empty, stopping playback")
+                await self.stop()
                 return
 
+            if self._current_track:
+                self.history.append(self._current_track)
+                self.history = self.history[-self.max_history_size:]
+
+            self.forward_stack.clear()
             next_track = self.queue.get()
-            await self.play_track(next_track)
+            self._current_track = next_track
+
+            logger.info(f"⏭️ Skipping to: {next_track.title}")
+            await self.play_track(next_track, replace=True, requester=getattr(next_track, 'requester', None))
 
         except Exception as e:
-            logger.error(f"[do_next error] {e}")
+            logger.error(f"❌ Skip failed: {e}")
+
+
+    async def do_next(self):
+            try:
+                if self.state.loop_mode == LoopMode.TRACK and self._current_track:
+                    return await self.play_track(self._current_track, requester=self._current_track.requester)
+                if self.state.loop_mode == LoopMode.QUEUE and self._current_track:
+                    self.queue.put(self._current_track)
+                if self.queue.is_empty:
+                    if self.state.autoplay and self._current_track:
+                        recommended = await self._get_autoplay_track()
+                        if recommended:
+                            return await self.play_track(recommended, requester=self._current_track.requester)
+                    await self._start_idle_timer()
+                    return
+                if self._current_track:
+                    self.history.append(self._current_track)
+                    self.history = self.history[-self.max_history_size:]
+                    logger.debug(f"Added to history: {self._current_track.title}")
+                self.forward_stack.clear()
+                next_track = self.queue.get()
+                self._current_track = next_track
+                await self.play_track(next_track, requester=next_track.requester)
+            except Exception as e:
+                logger.error(f"do_next error: {e}")
 
     def _schedule_auto_leave(self) -> None:
         async def leave_after_timeout():
@@ -284,37 +345,154 @@ class HarmonyPlayer(wavelink.Player):
                 logger.error(f"Auto-disconnect failed: {e}")
         self._auto_leave_task = asyncio.create_task(leave_after_timeout())
 
-    async def skip(self) -> None:
-        if self.queue.is_empty:
-            await self.stop()
-            return
-        next_track = self.queue.get()
-        await self.play_track(next_track)
-
     async def play_previous(self) -> bool:
         try:
-            if not self.previous or not self.is_connected_safely:
+            logger.debug(f"play_previous called for player {id(self)} in guild {self.guild.id}")
+
+            if not self.history or not self.is_connected_safely:
+                logger.debug("No history or not connected")
                 return False
-            current = self._current_track
-            success = await self.play_track(self.previous)
-            if success:
-                self.previous = current
-                return True
-            return False
+
+            # Сохраняем текущий трек в forward_stack
+            if self._current_track:
+                self.forward_stack.append(self._current_track)
+
+            previous_track = self.history.pop()
+            self._current_track = previous_track
+            self._handling_track_end = True
+
+            await self.play_track(previous_track, requester=getattr(previous_track, "requester", None), add_to_history=False)
+
+            logger.info(f"Playing previous: {previous_track.title}")
+            return True
+
         except Exception as e:
-            logger.error(f"Play previous failed: {e}")
+            logger.error(f"play_previous failed: {e}")
             return False
+
+        finally:
+            self._handling_track_end = False
+
+
+
+
+    async def play_forward(self) -> bool:
+        try:
+            logger.debug(f"play_forward called for player {id(self)} in guild {self.guild.id}")
+
+            if not self.forward_stack or not self.is_connected_safely:
+                logger.debug("No forward stack or not connected")
+                return False
+
+            # Сохраняем текущий трек в history
+            if self._current_track:
+                self.history.append(self._current_track)
+                self.history = self.history[-self.max_history_size:]
+
+            next_track = self.forward_stack.pop()
+            self._current_track = next_track
+            self._handling_track_end = True
+
+            await self.play_track(next_track, requester=getattr(next_track, "requester", None), add_to_history=False)
+
+            logger.info(f"Playing forward: {next_track.title}")
+            return True
+
+        except Exception as e:
+            logger.error(f"play_forward failed: {e}")
+            return False
+
+        finally:
+            self._handling_track_end = False
+
+    async def set_effects(self, **kwargs):
+            try:
+                filters = wavelink.Filters()
+                if kwargs.get('bass', False):
+                    eq_bands = [
+                        {"band": 0, "gain": 0.6}, {"band": 1, "gain": 0.7},
+                        {"band": 2, "gain": 0.8}, {"band": 3, "gain": 0.4},
+                        {"band": 4, "gain": 0.0}
+                    ]
+                    filters.equalizer.set(bands=eq_bands)
+                if kwargs.get('treble', False):
+                    eq_bands = [
+                        {"band": 10, "gain": 0.5}, {"band": 11, "gain": 0.6},
+                        {"band": 12, "gain": 0.7}, {"band": 13, "gain": 0.8},
+                        {"band": 14, "gain": 0.6}
+                    ]
+                    filters.equalizer.set(bands=eq_bands)
+                if kwargs.get('nightcore', False):
+                    filters.timescale.set(speed=1.2, pitch=1.2, rate=1.0)
+                if kwargs.get('vaporwave', False):
+                    filters.timescale.set(speed=0.8, pitch=0.8, rate=1.0)
+                    eq_bands = [
+                        {"band": 0, "gain": -0.2}, {"band": 1, "gain": -0.2},
+                        {"band": 2, "gain": -0.1}
+                    ]
+                    filters.equalizer.set(bands=eq_bands)
+                if kwargs.get('karaoke', False):
+                    filters.karaoke.set(level=1.0, mono_level=1.0, filter_band=220.0, filter_width=100.0)
+                if kwargs.get('tremolo', False):
+                    filters.tremolo.set(frequency=2.0, depth=0.5)
+                if kwargs.get('vibrato', False):
+                    filters.vibrato.set(frequency=2.0, depth=0.5)
+                if kwargs.get('distortion', False):
+                    filters.distortion.set(
+                        sin_offset=0.0, sin_scale=1.0, cos_offset=0.0, cos_scale=1.0,
+                        tan_offset=0.0, tan_scale=1.0, offset=0.0, scale=1.2
+                    )
+                await self.set_filters(filters)
+                logger.info(f"🎚️ Applied effects: {[k for k, v in kwargs.items() if v]}")
+            except Exception as e:
+                logger.error(f"❌ Failed to set effects: {e}")
+                raise
 
     async def cleanup_disconnect(self) -> None:
         try:
             self._is_destroyed = True
+
             if self._auto_leave_task and not self._auto_leave_task.done():
                 self._auto_leave_task.cancel()
                 self._auto_leave_task = None
-            if self.is_connected_safely:
+
+            if self._update_task and not self._update_task.done():
+                self._update_task.cancel()
+                self._update_task = None
+
+            if super().connected:
+                logger.info("Disconnecting from voice channel")
                 await self.disconnect()
+                logger.info("Successfully disconnected")
+            else:
+                logger.warning("Player not connected, skipping disconnect")
+
+            self.history.clear()
+            self.forward_stack.clear()
+            self._current_track = None
+
+            if self.now_playing_message:
+                try:
+                    await self.now_playing_message.delete()
+                except discord.HTTPException:
+                    pass
+                self.now_playing_message = None
+
+            # УДАЛЕНО: await super().destroy()
+
         except Exception as e:
             logger.error(f"Cleanup disconnect failed: {e}")
+
+    # Add the missing _get_autoplay_track method
+    async def _get_autoplay_track(self) -> Optional[wavelink.Playable]:
+        """Get a recommended track for autoplay (placeholder implementation)"""
+        try:
+            # This is a placeholder - you'll need to implement your autoplay logic
+            # For example, you could use the current track to find similar tracks
+            return None
+        except Exception as e:
+            logger.error(f"Error getting autoplay track: {e}")
+            return None
 
 class Music(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -338,22 +516,14 @@ class Music(commands.Cog):
         try:
             is_url = bool(re.match(r'^https?://', query, re.IGNORECASE))
             if is_url:
-                results = await asyncio.wait_for(
-                    wavelink.Playable.search(query),
-                    timeout=5.0
-                )
+                results = await asyncio.wait_for(wavelink.Playable.search(query), timeout=5.0)
                 return results if results else None
             else:
-                sources = [
-                    (wavelink.TrackSource.SoundCloud, "scsearch:")
-                ]
+                sources = [(wavelink.TrackSource.SoundCloud, "scsearch:")]
                 for source, prefix in sources:
                     try:
                         full_query = prefix + query
-                        results = await asyncio.wait_for(
-                            wavelink.Playable.search(full_query, source=source),
-                            timeout=5.0
-                        )
+                        results = await asyncio.wait_for(wavelink.Playable.search(full_query, source=source), timeout=5.0)
                         if results:
                             return results
                     except asyncio.TimeoutError:
@@ -367,25 +537,17 @@ class Music(commands.Cog):
             logger.error(f"Search error: {e}")
             return None
 
-    async def _ensure_voice_connection(
-        self, 
-        interaction: discord.Interaction, 
-        voice_channel: discord.VoiceChannel
-    ) -> Optional[HarmonyPlayer]:
+    async def _ensure_voice_connection(self, interaction: discord.Interaction, voice_channel: discord.VoiceChannel) -> Optional[HarmonyPlayer]:
         guild_id = interaction.guild.id
         lock = await self._get_connection_lock(guild_id)
         async with lock:
             try:
                 vc = interaction.guild.voice_client
-                if vc and isinstance(vc, HarmonyPlayer) and vc.is_connected_safely:
-                    if vc.channel.id != voice_channel.id:
-                        await vc.move_to(voice_channel)
-                    return vc
-                if vc:
-                    try:
-                        await vc.cleanup_disconnect()
-                    except Exception as e:
-                        logger.warning(f"Cleanup of old connection failed: {e}")
+                if vc and isinstance(vc, HarmonyPlayer):
+                    logger.debug(f"Existing player found for guild {guild_id}, connected: {vc.is_connected_safely}")
+                    if vc.is_connected_safely and vc.channel.id == voice_channel.id:
+                        return vc
+                    await vc.cleanup_disconnect()
                 vc = await voice_channel.connect(cls=HarmonyPlayer, timeout=10.0)
                 vc.text_channel = interaction.channel
                 logger.info(f"Connected to voice channel: {voice_channel.name}")
@@ -445,57 +607,48 @@ class Music(commands.Cog):
                 )
                 return
             if isinstance(results, wavelink.Playlist):
+                vc.playlist_mode = True
                 added_count = 0
+                logger.info(f"Processing playlist: {results.name}, track count: {len(results.tracks)}")
                 for track in results.tracks:
-                    track.requester = interaction.user  # Set requester
-                    vc.queue.put(track)
-                    added_count += 1
+                    try:
+                        track.requester = interaction.user
+                        vc.queue.put(track)
+                        added_count += 1
+                        logger.debug(f"Added track to queue: {track.author} - {track.title}")
+                    except Exception as e:
+                        logger.error(f"Failed to add track {track.title} to queue: {e}")
+                        continue
+                logger.info(f"Added {added_count} tracks to queue from playlist: {results.name}")
                 embed = discord.Embed(
-                    title=f"{Emojis.ADD} Плейлист добавлен",
-                    description=f"**{results.name}** — {added_count} треков добавлено в очередь",
+                    description=f'Добавлен плейлист "**{results.name}**" ({added_count} треков)',
                     color=Colors.SUCCESS
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 if not vc.playing and not vc.paused:
+                    logger.info("Starting playback for playlist")
                     await vc.do_next()
-                    if vc.current:
-                        try:
-                            await send_now_playing_message(
-                                interaction.channel, vc.current, vc, interaction.user
-                            )
-                        except Exception as e:
-                            logger.warning(f"Failed to send now playing message: {e}")
             else:
                 track = results[0]
-                track.requester = interaction.user  # Set requester
+                track.requester = interaction.user
                 logger.info(f"Found track: {track.title} by {track.author}")
                 if vc.playing or vc.paused or vc.current:
                     vc.queue.put(track)
                     queue_position = vc.queue.count
                     embed = discord.Embed(
-                        description=(
-                            f"**Добавлено в очередь #{queue_position}:**\n"
-                            f"{track.author} — {track.title}"
-                        ),
+                        description=f"Добавлено в очередь #{queue_position}: {track.author} — {track.title}",
                         color=Colors.SUCCESS
                     )
                     await interaction.followup.send(embed=embed, ephemeral=True)
                 else:
-                    await vc.play_track(track)
-                    try:
-                        await send_now_playing_message(
-                            interaction.channel, vc.current, vc, interaction.user
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to send now playing message: {e}")
+                    await vc.play_track(track, requester=interaction.user)
                     embed = discord.Embed(
-                        description=f"**Воспроизводится:** {track.author} — {track.title}",
+                        description=f"Воспроизводится: {track.author} — {track.title}",
                         color=Colors.SUCCESS
                     )
                     await interaction.followup.send(embed=embed, ephemeral=True)
         except Exception as e:
             logger.error(f"Play command failed: {e}")
-            traceback.print_exc()
             try:
                 await interaction.followup.send(
                     embed=create_error_embed("Ошибка", "Произошла непредвиденная ошибка"),
@@ -506,111 +659,68 @@ class Music(commands.Cog):
 
     @commands.Cog.listener()
     async def on_wavelink_track_end(self, payload: wavelink.TrackEndEventPayload) -> None:
-        try:
-            player: HarmonyPlayer = payload.player
-            if not player or not isinstance(player, HarmonyPlayer):
-                logger.warning("No valid player in track end event")
-                return
-            if player._is_destroyed:
-                logger.info("Player is destroyed, skipping track end handling")
-                return
+        player: HarmonyPlayer = payload.player
 
-            logger.info(f"Track ended: {payload.track.title if payload.track else 'Unknown'}")
-            logger.debug(f"End reason: {payload.reason}")
-
-            # 🎯 Обновить эмбед для завершенного трека
-            if payload.track and hasattr(player, "now_playing_message") and player.now_playing_message:
-                track = payload.track
-                requester = getattr(track, "requester", None)
-                duration = format_duration(track.length)
-
-                artist = getattr(track, 'author', 'Неизвестный исполнитель')
-                title = getattr(track, 'title', 'Неизвестный трек')
-                uri = getattr(track, 'uri', '')  # Получить URL трека
-                thumbnail = getattr(track, 'artwork', None) or getattr(track, 'thumbnail', None)
-                requester_name = requester.display_name if requester else 'shane4kaa'
-
-                # Создать эмбед с названием трека как гиперссылкой
-                embed = discord.Embed(
-                    title=artist,
-                    description=f"**[{title}]({uri})**\n\n**> Статус:\n** Прослушано ({duration}) — {requester_name}" if uri else f"**{title}**\n\n**> Статус:\n** Прослушано ({duration}) — {requester_name}",
-                    color=0x2B2D31
-                )
-                if thumbnail:
-                    embed.set_thumbnail(url=thumbnail)
-
-                try:
-                    logger.info(f"Updating now_playing_message for {title} in guild {player.guild.id}")
-                    # Сохранять view, если очередь не пуста, иначе убрать
-                    view = player.view if not player.queue.is_empty else None
-                    await player.now_playing_message.edit(embed=embed, view=view)
-                except Exception as e:
-                    logger.warning(f"Could not edit finished track embed: {e}")
-
-            # ▶️ Обработать следующий трек или пустую очередь
-            if payload.reason in ("finished", "stopped", "cleanup"):
-                if not player.queue.is_empty:
-                    next_track = await player.queue.get_wait()
-                    await player.play(next_track)
-                    return
-
-                # ❌ Очередь пуста — отправить отдельный эмбед
-                if player.text_channel:
-                    empty_queue_embed = discord.Embed(
-                        description="—・Пустая очередь сервера\nЯ покинула канал, потому что в очереди не осталось треков",
-                        color=0x2B2D31
-                    )
-                    try:
-                        logger.info(f"Sending empty queue embed in guild {player.guild.id}")
-                        await player.text_channel.send(embed=empty_queue_embed)
-                    except Exception as e:
-                        logger.warning(f"Could not send empty queue embed: {e}")
-
-                logger.info("Queue empty, keeping updated embed")
-                await player._start_idle_timer()  # Запустить таймер бездействия
-
-        except Exception as e:
-            logger.error(f"Track end handler failed: {e}")
-            traceback.print_exc()
-
-
-    @commands.Cog.listener()
-    async def on_wavelink_track_start(self, payload: wavelink.TrackStartEventPayload) -> None:
-        if payload.player._handling_track_start:
+        if not player or getattr(player, "_is_destroyed", False):
+            logger.warning("❌ Invalid or destroyed player in track end event")
             return
-        payload.player._handling_track_start = True
+
+        if getattr(player, "_handling_track_end", False):
+            logger.debug("Track end already handled")
+            return
+
+        player._handling_track_end = True
+
         try:
-            player: HarmonyPlayer = payload.player
-            track = payload.track
-            if not player or not isinstance(player, HarmonyPlayer) or not track:
+            if payload.reason == "replaced":
+                logger.info("🔁 Track replaced manually (e.g., skip) — no action needed")
                 return
-            if player._is_destroyed:
-                return
-            logger.info(f"Track started: {track.title}")
-            guild_id = player.guild.id
-            if guild_id in now_playing_updater.active_messages:
-                info = now_playing_updater.active_messages[guild_id]
-                message = info['message']
-                requester = info['requester']
+
+            logger.info(f"⏹️ Track ended: {payload.track.title if payload.track else 'Unknown'}")
+
+            # Обновляем историю треков
+            if payload.track and player._current_track:
+                track_uri = getattr(payload.track, 'uri', getattr(payload.track, 'identifier', ''))
+                if track_uri not in {getattr(t, 'uri', getattr(t, 'identifier', '')) for t in player.history}:
+                    player.history.append(payload.track)
+                    player.history = player.history[-player.max_history_size:]
+
+            # Отправляем embed об окончании трека (если нужно)
+            if payload.track and player.now_playing_message:
                 try:
-                    embed = create_now_playing_embed(track, player, requester)
-                    await message.edit(embed=embed)
-                except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
-                    logger.debug(f"Failed to update now playing message: {e}")
-                    now_playing_updater.unregister_message(guild_id)
+                    await player.now_playing_message.edit(embed=discord.Embed(
+                        description=f"**> Статус:** Прослушано — {getattr(payload.track, 'title', 'Без названия')}",
+                        color=0x2B2D31,
+                        timestamp=discord.utils.utcnow()
+                    ), view=None)
+                    logger.info("✅ Updated now playing message")
+                except discord.HTTPException as e:
+                    logger.warning(f"Failed to update now playing message: {e}")
+
+            # Обработка очереди
+            if player.queue.is_empty:
+                logger.info("🚪 Queue is empty. Disconnecting.")
+                if player.text_channel:
+                    try:
+                        await player.text_channel.send(embed=discord.Embed(
+                            description="—・Пустая очередь сервера\nЯ покинула канал, потому что в очереди не осталось треков",
+                            color=0x2B2D31,
+                            timestamp=discord.utils.utcnow()
+                        ))
+                    except Exception as e:
+                        logger.error(f"❌ Failed to send empty queue message: {e}")
+                await player.cleanup_disconnect()
+            else:
+                await player.do_next()
+
         except Exception as e:
-            logger.error(f"Track start handler failed: {e}")
-            traceback.print_exc()
+            logger.error(f"❌ Track end handler failed: {e}")
         finally:
-            payload.player._handling_track_start = False
+            player._handling_track_end = False
+
 
     @commands.Cog.listener()
-    async def on_voice_state_update(
-        self, 
-        member: discord.Member, 
-        before: discord.VoiceState, 
-        after: discord.VoiceState
-    ) -> None:
+    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState) -> None:
         try:
             if member.id != self.bot.user.id:
                 return

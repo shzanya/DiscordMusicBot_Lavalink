@@ -1,6 +1,5 @@
 import asyncio
 import logging
-from pathlib import Path
 
 from core.bot import HarmonyBot
 
@@ -23,6 +22,7 @@ async def main():
     
     # Инициализация бота
     bot = HarmonyBot()
+    
     
     try:
         await bot.start(Settings.DISCORD_TOKEN)

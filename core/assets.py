@@ -6,6 +6,7 @@ from typing import Dict
 import hashlib
 import aiohttp
 
+
 class AutoEmojiManager:
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -52,16 +53,6 @@ class AutoEmojiManager:
         existing_emojis = {emoji.name: emoji for emoji in app_emojis}
 
         deleted = updated = added = 0
-
-        # 🗑 Удаление лишних
-        for name, emoji in existing_emojis.items():
-            if name not in local_files:
-                try:
-                    await emoji.delete()
-                    deleted += 1
-                    self.logger.info(f"🗑️ Удалён: {name}")
-                except Exception as e:
-                    self.logger.error(f"❌ Не удалось удалить {name}: {e}")
 
         # ♻️ Обновление и добавление
         for name, info in local_files.items():

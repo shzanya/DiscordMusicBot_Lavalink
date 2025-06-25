@@ -1,4 +1,5 @@
 import wavelink
+from wavelink.filters import Equalizer, Timescale, Filters
 import discord
 from enum import Enum
 from typing import Optional
@@ -21,24 +22,23 @@ class PlayerState:
     bass_boost: bool = False
     nightcore: bool = False
     vaporwave: bool = False
+    treble_boost: bool = False
+    karaoke: bool = False
+    tremolo: bool = False
+    vibrato: bool = False
+    distortion: bool = False
     volume_before_effects: int = 100
 
 class HarmonyPlayer(wavelink.Player):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, bot, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.bot = bot
         self.queue = wavelink.Queue()
         self.history = wavelink.Queue()
         self.state = PlayerState()
         self.controller_message: Optional[discord.Message] = None
         self.idle_task: Optional[asyncio.Task] = None
         self.logger = logging.getLogger("HarmonyPlayer")
-
-        # Гарантированно определяем все эффекты
-        self.state = PlayerState()(
-            bass_boost=False,
-            nightcore=False,
-            vaporwave=False
-        )
 
     async def play_track(self, track: wavelink.Playable, **kwargs):
         if not self.guild:
@@ -111,50 +111,31 @@ class HarmonyPlayer(wavelink.Player):
 
         return None
 
-    def _start_idle_timer(self):
-        if self.idle_task:
-            self.idle_task.cancel()
-
-        self.idle_task = asyncio.create_task(self._idle_disconnect())
-
-    async def _idle_disconnect(self):
-        try:
-            await asyncio.sleep(Settings.AUTO_DISCONNECT_TIMEOUT)
-
-            if not self.playing and self.queue.is_empty and self.is_connected():
-                await self.disconnect()
-
-                if self.channel:
-                    embed = discord.Embed(
-                        title="👋 Отключение",
-                        description="Отключился из-за бездействия",
-                        color=Colors.WARNING
-                    )
-                    await self.channel.send(embed=embed)
-
-        except asyncio.CancelledError:
-            pass
-
     async def set_effects(self, bass: bool = None, nightcore: bool = None, vaporwave: bool = None):
-        filters = wavelink.Filters()
+        self.state.bass_boost = bass if bass is not None else self.state.bass_boost
+        self.state.nightcore = nightcore if nightcore is not None else self.state.nightcore
+        self.state.vaporwave = vaporwave if vaporwave is not None else self.state.vaporwave
 
-        if bass is not None:
-            self.state.bass_boost = bass
-        if nightcore is not None:
-            self.state.nightcore = nightcore
-        if vaporwave is not None:
-            self.state.vaporwave = vaporwave
+        # Инициализация всех 15 полос
+        levels = [0.0] * 15
 
+        # Эффекты эквалайзера
         if self.state.bass_boost:
-            filters.equalizer.set_gain(0, 0.6)
-            filters.equalizer.set_gain(1, 0.7)
-            filters.equalizer.set_gain(2, 0.8)
-
-        if self.state.nightcore:
-            filters.timescale.set(speed=1.2, pitch=1.2)
+            levels[0] += 0.6
+            levels[1] += 0.7
+            levels[2] += 0.8
 
         if self.state.vaporwave:
-            filters.timescale.set(speed=0.8, pitch=0.8)
-            filters.equalizer.set_gain(0, -0.2)
+            levels[0] += -0.2
 
+        equalizer = Equalizer.from_levels(*levels) if any(levels) else None
+
+        # Эффекты TimeScale
+        timescale = None
+        if self.state.nightcore:
+            timescale = Timescale(speed=1.2, pitch=1.2)
+        elif self.state.vaporwave:
+            timescale = Timescale(speed=0.8, pitch=0.8)
+
+        filters = Filters(equalizer=equalizer, timescale=timescale)
         await self.set_filters(filters)

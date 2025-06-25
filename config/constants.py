@@ -1,77 +1,117 @@
 from emojis import Emojis as CustomEmojis
 
 class Emojis:
-    """🎨 Эмодзи для интерфейса"""
-    NK_RANDOM = CustomEmojis.NK_RANDOM
-    NK_BACK = CustomEmojis.NK_BACK
-    NK_MUSICPLAY = CustomEmojis.NK_MUSICPLAY
-    NK_MUSICPAUSE = CustomEmojis.NK_MUSICPAUSE
-    NK_NEXT = CustomEmojis.NK_NEXT
-    NK_POVTOR = CustomEmojis.NK_POVTOR
-    NK_TIME = CustomEmojis.NK_TIME
-    NK_VOLUME = CustomEmojis.NK_VOLUME
-    NK_LEAVE = CustomEmojis.NK_LEAVE
-    NK_TEXT = CustomEmojis.NK_TEXT
-    NK_HEART = CustomEmojis.NK_HEART
+    _color = "default"
 
-    # Прогресс-бар
-    PROGRESS_PLAY = CustomEmojis.NK_MUSICPLAY
-    PROGRESS_PAUSE = CustomEmojis.NK_MUSICPAUSE
-    PROGRESS_LINE_START = CustomEmojis.NK_MUSICLINESTARTVISIBLE
-    PROGRESS_LINE_START_FULL = CustomEmojis.NK_MUSICLINESTARTFULLVISIBLE
-    PROGRESS_LINE_FULL = CustomEmojis.NK_MUSICLINEFULLVISIBLE
-    PROGRESS_LINE_EMPTY = CustomEmojis.NK_MUSICLINEEMPTY
-    PROGRESS_LINE_END = CustomEmojis.NK_MUSICLINEENDVISIBLE
-    # 🎵 Музыка
-    PLAY = "▶️"
-    PAUSE = "⏸️"
-    STOP = "⏹️"
-    SKIP = "⏭️"
-    PREVIOUS = "⏮️"
-    SHUFFLE = "🔀"
-    REPEAT = "🔄"
-    REPEAT_ONE = "🔂"
+    _color_suffixes = {
+        "default": "",
+        "red": "red",
+        "blue": "blue",
+        "green": "green",
+        "yellow": "yellow",
+        "purple": "purple",
+        "orange": "orange",
+        "pink": "pink",
+        "cyan": "cyan",
+        "white": "white",
+        "black": "black",
+        "gray": "gray",
+        "brown": "brown",
+        "lime": "lime",
+        "teal": "teal",
+        "indigo": "indigo",
+        "maroon": "maroon",
+        "navy": "navy",
+        "olive": "olive",
+        "aqua": "aqua",
+        "fuchsia": "fuchsia",
+        "silver": "silver",
+        "gold": "gold",
+        "coral": "coral",
+        "salmon": "salmon",
+        "crimson": "crimson"
+    }
 
-    # 🔊 Звук
-    VOLUME_LOW = "🔉"
-    VOLUME_HIGH = "🔊"
-    VOLUME_MUTE = "🔇"
+    @classmethod
+    def set_color(cls, color_name: str):
+        if color_name.lower() in cls._color_suffixes:
+            cls._color = color_name.lower()
+        else:
+            cls._color = "default"
 
-    # 📋 Очередь
-    QUEUE = "📋"
-    ADD = "➕"
-    REMOVE = "➖"
-    CLEAR = "🗑️"
 
-    # ❤️ Избранное
-    HEART = "❤️"
-    HEART_BROKEN = "💔"
-    STAR = "⭐"
 
-    # 🎚️ Эффекты
-    BASS = "🎛️"
-    NIGHTCORE = "🌙"
-    VAPORWAVE = "🌊"
+    @staticmethod
+    def ERROR():
+        return "❌"
 
-    # ✅ Статусы
-    SUCCESS = "✅"
-    ERROR = "❌"
-    WARNING = "⚠️"
-    INFO = "ℹ️"
 
-    # 🔐 Доступ
-    LOCK = "🔒"
-    UNLOCK = "🔓"
-    KEY = "🔑"
+    @classmethod
+    def _get_emoji(cls, base_name: str):
+        suffix = cls._color_suffixes.get(cls._color, "")
+        attr_name = f"{base_name}_{suffix.upper()}" if suffix else base_name
+        if hasattr(CustomEmojis, attr_name):
+            return getattr(CustomEmojis, attr_name)
+        elif hasattr(CustomEmojis, base_name):
+            return getattr(CustomEmojis, base_name)
+        else:
+            return "❓"
 
+    # Все emoji через classmethod
+    @classmethod
+    def NK_BACK(cls): return cls._get_emoji("NK_BACK")
+    @classmethod
+    def NK_BACKK(cls): return cls._get_emoji("NK_BACKK")
+    @classmethod
+    def NK_BACKKK(cls): return cls._get_emoji("NK_BACKKK")
+    @classmethod
+    def NK_HEART(cls): return cls._get_emoji("NK_HEART")
+    @classmethod
+    def NK_LEAVE(cls): return cls._get_emoji("NK_LEAVE")
+    @classmethod
+    def NK_MUSICLINEEMPTY(cls): return cls._get_emoji("NK_MUSICLINEEMPTY")
+    @classmethod
+    def NK_MUSICLINEENDVISIBLE(cls): return cls._get_emoji("NK_MUSICLINEENDVISIBLE")
+    @classmethod
+    def NK_MUSICLINEFULLVISIBLE(cls): return cls._get_emoji("NK_MUSICLINEFULLVISIBLE")
+    @classmethod
+    def NK_MUSICLINESTARTFULLVISIBLE(cls): return cls._get_emoji("NK_MUSICLINESTARTFULLVISIBLE")
+    @classmethod
+    def NK_MUSICLINESTARTVISIBLE(cls): return cls._get_emoji("NK_MUSICLINESTARTVISIBLE")
+    @classmethod
+    def NK_MUSICPAUSE(cls): return cls._get_emoji("NK_MUSICPAUSE")
+    @classmethod
+    def NK_MUSICPLAY(cls): return cls._get_emoji("NK_MUSICPLAY")
+    @classmethod
+    def NK_NEXT(cls): return cls._get_emoji("NK_NEXT")
+    @classmethod
+    def NK_NEXTT(cls): return cls._get_emoji("NK_NEXTT")
+    @classmethod
+    def NK_NEXTTT(cls): return cls._get_emoji("NK_NEXTTT")
+    @classmethod
+    def NK_POVTOR(cls): return cls._get_emoji("NK_POVTOR")
+    @classmethod
+    def NK_RANDOM(cls): return cls._get_emoji("NK_RANDOM")
+    @classmethod
+    def NK_TEXT(cls): return cls._get_emoji("NK_TEXT")
+    @classmethod
+    def NK_TIME(cls): return cls._get_emoji("NK_TIME")
+    @classmethod
+    def NK_TRASH(cls): return cls._get_emoji("NK_TRASH")
+    @classmethod
+    def NK_VOLUME(cls): return cls._get_emoji("NK_VOLUME")
+
+# Цвета
 class Colors:
-    """🎨 Цвета для embed'ов"""
-    
-    PRIMARY = 0x2B2D31     # Discord Blurple
-    SUCCESS = 0x2B2D31      # Зеленый
-    WARNING = 0x2B2D31     # Желтый
-    ERROR = 0xEA5455      # Красный
-    INFO = 0x2B2D31       # Синий
-    MUSIC = 0x2B2D31       # Розовый
-    PREMIUM = 0x2B2D31      # Золотой
-    SPOTIFY = 0x2B2D31      # Spotify зеленый
+    PRIMARY = 0x2B2D31
+    SUCCESS = 0x2B2D31
+    WARNING = 0x2B2D31
+    ERROR = 0xEA5455
+    INFO = 0x2B2D31
+    MUSIC = 0x2B2D31
+    PREMIUM = 0x2B2D31
+    SPOTIFY = 0x2B2D31
+
+# Установка цвета
+Emojis.set_color("pink")
+emojis = Emojis

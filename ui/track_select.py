@@ -1,7 +1,8 @@
-import discord
 from discord.ui import Select
+from discord import Interaction, SelectOption
 from typing import Optional
 from core.player import HarmonyPlayer
+import discord
 
 
 class TrackSelect(Select):
@@ -9,8 +10,12 @@ class TrackSelect(Select):
         self.player = player
         self.requester = requester
 
-        # Получаем историю (последние 25, от новых к старым)
-        self.tracks = list(reversed(getattr(player, 'history', [])[-25:]))
+        # Получаем уникальную историю (последние 25 треков, от новых к старым, без дубликатов)
+        history = getattr(player, 'history', [])
+        # Удаляем дубликаты, сохраняя порядок
+        seen = set()
+        unique_history = [t for t in reversed(history[-25:]) if not (t.uri in seen or seen.add(t.uri))]
+        self.tracks = unique_history
 
         options = []
         for i, track in enumerate(self.tracks):
@@ -21,7 +26,7 @@ class TrackSelect(Select):
             if len(label) > 100:
                 label = label[:97] + "..."
 
-            options.append(discord.SelectOption(
+            options.append(SelectOption(
                 label=label,
                 value=str(i),
                 description=f"Длительность: {self._format_duration(getattr(track, 'length', 0))}"
@@ -30,7 +35,7 @@ class TrackSelect(Select):
         disabled = not bool(options)
 
         if not options:
-            options = [discord.SelectOption(label="История пуста", value="none")]
+            options = [SelectOption(label="История пуста", value="none")]
 
         super().__init__(
             placeholder="Выберите трек из истории воспроизведения",
@@ -41,12 +46,15 @@ class TrackSelect(Select):
             custom_id="track_select"
         )
 
-    def _format_duration(self, seconds: int) -> str:
-        if seconds <= 0:
+    def _format_duration(self, milliseconds: int) -> str:
+        if milliseconds <= 0:
             return "N/A"
-        return f"{seconds // 60}:{seconds % 60:02d}"
+        seconds = milliseconds // 1000  # Конвертируем миллисекунды в секунды
+        minutes = seconds // 60
+        seconds = seconds % 60
+        return f"{minutes}:{seconds:02d}"
 
-    async def callback(self, interaction: discord.Interaction):
+    async def callback(self, interaction: Interaction):
         if self.values[0] == "none":
             await interaction.response.send_message("❌ История пуста.", ephemeral=True)
             return
@@ -62,10 +70,14 @@ class TrackSelect(Select):
             await interaction.response.send_message("❌ Плеер недоступен", ephemeral=True)
             return
 
+        # Устанавливаем requester
+        if self.requester:
+            track.requester = self.requester
+
+        await interaction.response.defer()
         await self.player.play_track(track)
 
-        track_info = f"{getattr(track, 'author', 'Unknown')} — {getattr(track, 'title', 'Unknown')}"
-        await interaction.response.send_message(
-            f"▶️ Воспроизвожу: **{track_info}** из истории",
-            ephemeral=True
-        )
+        try:
+            await interaction.message.edit(view=None)
+        except discord.HTTPException:
+            pass
