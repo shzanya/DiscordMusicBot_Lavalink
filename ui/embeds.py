@@ -9,6 +9,7 @@ from config.constants import Colors, emojis
 from core.player import HarmonyPlayer
 from ui.embed_now_playing import create_now_playing_embed, create_progress_bar
 from utils.formatters import format_duration
+from ui.views import MusicPlayerView
 
 
 class NowPlayingUpdater:
@@ -175,11 +176,10 @@ def create_queue_embed(
 
 async def send_now_playing_message(channel, track: wavelink.Playable, player: HarmonyPlayer, requester: discord.Member) -> discord.Message:
     """Отправка сообщения с автообновлением и кнопками управления"""
-    from ui.views import MusicPlayerView
     embed = create_now_playing_embed(track, player, requester)
 
     # Создаем view без message
-    view = MusicPlayerView(player, None, requester)
+    view = await MusicPlayerView.create(player, None, requester)
 
     # Отправляем embed с view
     message = await channel.send(embed=embed, view=view)

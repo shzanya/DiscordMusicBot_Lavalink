@@ -69,7 +69,7 @@ class HarmonyBot(commands.Bot):
         cog_structure = {
             'commands/music': [
                 'playback',
-                'queue',
+                #'queue',
                 'effects',
                 # 'favorites',  # ⛔ ModuleNotFoundError: services.database
                 # 'lyrics',     # ⛔ файл не найден
@@ -81,7 +81,7 @@ class HarmonyBot(commands.Bot):
                 # 'import_export'   # ⛔ файл не найден
             ],
             'commands/admin': [
-                # 'settings',     # ⛔ ModuleNotFoundError
+                 'settings',     # ⛔ ModuleNotFoundError
                 # 'permissions',  # ⛔ ModuleNotFoundError
                 # 'moderation'    # ⛔ файл не найден
             ],
@@ -238,7 +238,7 @@ class HarmonyBot(commands.Bot):
             status=discord.Status.online,
             activity=discord.Activity(
                 type=discord.ActivityType.listening,
-                name=f"{Settings.COMMAND_PREFIX}help | 🎵 Музыка для всех"
+                name="R.Sound"
             )
         )
 

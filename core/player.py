@@ -57,7 +57,7 @@ class HarmonyPlayer(wavelink.Player):
             from ui.embeds import create_now_playing_embed
 
             embed = create_now_playing_embed(track, self)
-            view = MusicPlayerView(self)
+            view = await MusicPlayerView.create(self)
 
             try:
                 await self.controller_message.edit(embed=embed, view=view)

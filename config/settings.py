@@ -34,9 +34,12 @@ class Settings:
     GENIUS_ACCESS_TOKEN: Optional[str] = os.getenv('GENIUS_ACCESS_TOKEN')
     
     # 🎛️ Настройки по умолчанию
-    DEFAULT_VOLUME: int = 75
+    DEFAULT_VOLUME: int = 100
     MAX_QUEUE_SIZE: int = 1000
     AUTO_DISCONNECT_TIMEOUT: int = 300  # 5 минут
+    
+    # MongoDB connection string (default: localhost)
+    MONGODB_URI = "mongodb+srv://shanya:Qazedc123@discord-bot-yt.fdfytur.mongodb.net/?retryWrites=true&w=majority&appName=discord-Bot-yt"
     
     @classmethod
     def validate(cls) -> bool:

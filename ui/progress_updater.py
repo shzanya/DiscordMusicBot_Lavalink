@@ -3,10 +3,11 @@
 """
 import asyncio
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
 import discord
 import wavelink
+from discord import app_commands
 
 logger = logging.getLogger(__name__)
 
@@ -34,18 +35,21 @@ class NowPlayingUpdater:
         message: discord.Message, 
         player, 
         track: wavelink.Playable, 
-        requester: discord.Member
+        requester: discord.Member,
+        color: str = "default",
+        custom_emojis: dict = None
     ):
         """Регистрация сообщения для автообновления"""
         if not message or not player:
             return
-            
         self.active_messages[guild_id] = {
             'message': message,
             'player': player,
             'track': track,
             'requester': requester,
-            'last_update': 0
+            'last_update': 0,
+            'color': color,
+            'custom_emojis': custom_emojis
         }
         self.start_updater()
     
@@ -82,43 +86,39 @@ class NowPlayingUpdater:
         try:
             message = info.get('message')
             player = info.get('player')
-
+            color = info.get('color', "default")
+            custom_emojis = info.get('custom_emojis', None)
             if not message or not player:
                 self.unregister_message(guild_id)
                 return
-
             # Проверяем состояние плеера
             if not hasattr(player, 'playing') or not player.playing or not player.current:
                 self.unregister_message(guild_id)
                 return
-
             # Получаем позицию безопасно
             try:
                 current_position = int(getattr(player, 'position', 0) or 0)
             except Exception:
                 current_position = 0
-
             current_track = player.current
-
             # Принудительное обновление при смене трека
             force_update = False
             if info.get('track') != current_track:
                 info['track'] = current_track
                 force_update = True
-
             # Проверка времени обновления
             last_update = info.get('last_update', 0)
             if not force_update and abs(current_position - last_update) < 1:
                 return
-
             info['last_update'] = current_position
-
             # Создаем и отправляем обновленный embed
             from ui.embed_now_playing import create_now_playing_embed
             requester = info.get('requester')
-            embed = create_now_playing_embed(current_track, player, requester)
+            embed = create_now_playing_embed(
+                current_track, player, requester,
+                color=color, custom_emojis=custom_emojis
+            )
             await message.edit(embed=embed)
-            
         except discord.NotFound:
             self.unregister_message(guild_id)
         except discord.Forbidden:
@@ -138,33 +138,112 @@ async def send_now_playing_message(
     track: wavelink.Playable,
     player,
     requester: discord.Member,
-    view: Optional[discord.ui.View] = None
+    view: Optional[discord.ui.View] = None,
+    color: str = "default",
+    custom_emojis: dict = None
 ) -> discord.Message:
     from ui.views import MusicPlayerView
     from ui.embed_now_playing import create_now_playing_embed
-
-    embed = create_now_playing_embed(track, player, requester)
-
+    embed = create_now_playing_embed(
+        track, player, requester,
+        color=color, custom_emojis=custom_emojis
+    )
     if view is None:
-        view = MusicPlayerView(player, None, requester)
-
+        view = await MusicPlayerView.create(
+            player, None, requester,
+            color=color, custom_emojis=custom_emojis
+        )
     message = await channel.send(embed=embed, view=view)
-
     view.message = message
     player.view = view
     player.now_playing_message = message
-
     await now_playing_updater.register_message(
         channel.guild.id,
         message,
         player,
         track,
-        requester
+        requester,
+        color=color,
+        custom_emojis=custom_emojis
     )
-
     return message
 
 
 def cleanup_updater():
     """Очистка ресурсов при завершении работы"""
     now_playing_updater.stop_updater()
+
+
+async def track_autocomplete(interaction: discord.Interaction, current: str) -> List[discord.app_commands.Choice[str]]:
+    if not current or len(current.strip()) < 2:
+        return []
+    query = current.strip()[:100]
+    cache_key = query.lower()
+    if cache_key in autocomplete_cache:
+        return autocomplete_cache[cache_key]
+    choices = []
+    try:
+        tracks = await asyncio.wait_for(
+            wavelink.Playable.search(query, source=wavelink.TrackSource.SoundCloud),
+            timeout=1.0
+        )
+        for track in tracks[:4]:
+            title = getattr(track, 'title', 'Unknown Title') or 'Unknown Title'
+            author = getattr(track, 'author', 'Unknown Artist') or 'Unknown Artist'
+            uri = getattr(track, 'uri', '') or getattr(track, 'identifier', '')
+            if not uri:
+                continue
+            display_name = f"{author} – {title}"
+            if len(display_name) > 97:
+                display_name = display_name[:94] + "..."
+            choices.append(
+                discord.app_commands.Choice(name=display_name, value=uri)
+            )
+    except asyncio.TimeoutError:
+        logging.debug(f"Autocomplete timeout for: {query}")
+    except Exception as e:
+        logging.debug(f"Autocomplete search error: {e}")
+    autocomplete_cache[cache_key] = choices
+    return choices
+
+
+async def advanced_track_autocomplete(interaction: discord.Interaction, current: str) -> List[discord.app_commands.Choice[str]]:
+    if not current or len(current.strip()) < 2:
+        return []
+    query = current.strip()[:100]
+    cache_key = query.lower()
+    if cache_key in autocomplete_cache:
+        return autocomplete_cache[cache_key]
+    choices = []
+    sources = [
+        wavelink.TrackSource.SoundCloud,
+        wavelink.TrackSource.YouTube,
+        wavelink.TrackSource.Spotify
+    ]
+    for source in sources:
+        try:
+            tracks = await asyncio.wait_for(
+                wavelink.Playable.search(query, source=source),
+                timeout=0.8
+            )
+            for track in tracks[:4]:
+                title = getattr(track, 'title', 'Unknown') or 'Unknown'
+                author = getattr(track, 'author', 'Unknown') or 'Unknown'
+                uri = getattr(track, 'uri', '') or getattr(track, 'identifier', '')
+                if not uri:
+                    continue
+                display = f"{author} – {title}"
+                if len(display) > 97:
+                    display = display[:94] + "..."
+                choices.append(
+                    discord.app_commands.Choice(name=display, value=uri)
+                )
+            if choices:
+                break
+        except (asyncio.TimeoutError, wavelink.LavalinkException):
+            continue
+        except Exception as e:
+            logging.debug(f"Source {source} error: {e}")
+            continue
+    autocomplete_cache[cache_key] = choices
+    return choices
