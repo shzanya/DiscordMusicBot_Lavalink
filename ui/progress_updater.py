@@ -3,11 +3,10 @@
 """
 import asyncio
 import logging
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 
 import discord
 import wavelink
-from discord import app_commands
 
 logger = logging.getLogger(__name__)
 
@@ -172,78 +171,3 @@ async def send_now_playing_message(
 def cleanup_updater():
     """Очистка ресурсов при завершении работы"""
     now_playing_updater.stop_updater()
-
-
-async def track_autocomplete(interaction: discord.Interaction, current: str) -> List[discord.app_commands.Choice[str]]:
-    if not current or len(current.strip()) < 2:
-        return []
-    query = current.strip()[:100]
-    cache_key = query.lower()
-    if cache_key in autocomplete_cache:
-        return autocomplete_cache[cache_key]
-    choices = []
-    try:
-        tracks = await asyncio.wait_for(
-            wavelink.Playable.search(query, source=wavelink.TrackSource.SoundCloud),
-            timeout=1.0
-        )
-        for track in tracks[:4]:
-            title = getattr(track, 'title', 'Unknown Title') or 'Unknown Title'
-            author = getattr(track, 'author', 'Unknown Artist') or 'Unknown Artist'
-            uri = getattr(track, 'uri', '') or getattr(track, 'identifier', '')
-            if not uri:
-                continue
-            display_name = f"{author} – {title}"
-            if len(display_name) > 97:
-                display_name = display_name[:94] + "..."
-            choices.append(
-                discord.app_commands.Choice(name=display_name, value=uri)
-            )
-    except asyncio.TimeoutError:
-        logging.debug(f"Autocomplete timeout for: {query}")
-    except Exception as e:
-        logging.debug(f"Autocomplete search error: {e}")
-    autocomplete_cache[cache_key] = choices
-    return choices
-
-
-async def advanced_track_autocomplete(interaction: discord.Interaction, current: str) -> List[discord.app_commands.Choice[str]]:
-    if not current or len(current.strip()) < 2:
-        return []
-    query = current.strip()[:100]
-    cache_key = query.lower()
-    if cache_key in autocomplete_cache:
-        return autocomplete_cache[cache_key]
-    choices = []
-    sources = [
-        wavelink.TrackSource.SoundCloud,
-        wavelink.TrackSource.YouTube,
-        wavelink.TrackSource.Spotify
-    ]
-    for source in sources:
-        try:
-            tracks = await asyncio.wait_for(
-                wavelink.Playable.search(query, source=source),
-                timeout=0.8
-            )
-            for track in tracks[:4]:
-                title = getattr(track, 'title', 'Unknown') or 'Unknown'
-                author = getattr(track, 'author', 'Unknown') or 'Unknown'
-                uri = getattr(track, 'uri', '') or getattr(track, 'identifier', '')
-                if not uri:
-                    continue
-                display = f"{author} – {title}"
-                if len(display) > 97:
-                    display = display[:94] + "..."
-                choices.append(
-                    discord.app_commands.Choice(name=display, value=uri)
-                )
-            if choices:
-                break
-        except (asyncio.TimeoutError, wavelink.LavalinkException):
-            continue
-        except Exception as e:
-            logging.debug(f"Source {source} error: {e}")
-            continue
-    autocomplete_cache[cache_key] = choices
-    return choices
