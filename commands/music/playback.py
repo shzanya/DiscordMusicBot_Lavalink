@@ -5,7 +5,6 @@ from typing import Dict, List, Optional, Union
 import discord
 import time
 import wavelink
-from cachetools import TTLCache
 from discord import app_commands
 from discord.ext import commands
 
@@ -34,38 +33,60 @@ logger = logging.getLogger(__name__)
 
 # Глобальные переменные с типизацией
 connection_locks: Dict[int, asyncio.Lock] = {}
-autocomplete_cache = TTLCache(maxsize=200, ttl=300)
-
+_autocomplete_cache = {}
+_cache_lock = asyncio.Lock()
 
 async def track_autocomplete(interaction, current: str) -> list[app_commands.Choice[str]]:
     query = (current or "").strip()
     if len(query) < 2:
         return []
-    query = query[:100]
-    cache_key = query.lower()
-    if cache_key in autocomplete_cache:
-        return autocomplete_cache[cache_key]
+    
+    query = query[:50]
+    
+    async with _cache_lock:
+        if query in _autocomplete_cache:
+            cached_time, cached_choices = _autocomplete_cache[query]
+            if time.time() - cached_time < 30:
+                return cached_choices
+    
     try:
-        tracks = await asyncio.wait_for(
+        results = await asyncio.wait_for(
             wavelink.Playable.search(query, source=wavelink.TrackSource.SoundCloud),
-            timeout=1.2
+            timeout=0.5
         )
-    except Exception:
+        
+        if not results:
+            return []
+        
+        choices = []
+        for track in results[:15]:
+            try:
+                title = getattr(track, 'title', 'Unknown') or 'Unknown'
+                author = getattr(track, 'author', 'Unknown') or 'Unknown'
+                uri = getattr(track, 'uri', '') or getattr(track, 'identifier', '')
+                
+                if not uri:
+                    continue
+                
+                display = f"{author} – {title}"
+                if len(display) > 97:
+                    display = display[:94] + "..."
+                
+                choices.append(app_commands.Choice(name=display, value=uri))
+            except Exception:
+                continue
+        
+        async with _cache_lock:
+            _autocomplete_cache[query] = (time.time(), choices)
+            if len(_autocomplete_cache) > 100:
+                oldest_key = min(_autocomplete_cache.keys(),
+                                 key=lambda k: _autocomplete_cache[k][0])
+                del _autocomplete_cache[oldest_key]
+        
+        return choices
+    
+    except (asyncio.TimeoutError, Exception):
         return []
-    choices = []
-    for track in tracks[:20]:
-        title = getattr(track, 'title', 'Unknown Title') or 'Unknown Title'
-        author = getattr(track, 'author', 'Unknown Artist') or 'Unknown Artist'
-        uri = getattr(track, 'uri', '') or getattr(track, 'identifier', '')
-        if not uri:
-            continue
-        display = f"{author} – {title}"
-        if len(display) > 97:
-            display = display[:94] + "..."
-        choices.append(app_commands.Choice(name=display, value=uri))
-    autocomplete_cache[cache_key] = choices
-    return choices
-
 
 class HarmonyPlayer(wavelink.Player):
     def __init__(self, *args, **kwargs):
@@ -516,9 +537,10 @@ class Music(commands.Cog):
         try:
             vc = interaction.guild.voice_client
             if not vc or not isinstance(vc, HarmonyPlayer):
+                # Показываем embed пустой очереди, а не ошибку подключения
                 await self._safe_send_response(
                     interaction,
-                    create_connection_error_embed("Бот не подключен к голосовому каналу"),
+                    create_empty_queue_embed(),
                     ephemeral=True
                 )
                 return
@@ -537,6 +559,7 @@ class Music(commands.Cog):
     async def play(self, interaction: discord.Interaction, query: str) -> None:
         if interaction.response.is_done():
             return
+        
         try:
             voice_state = getattr(interaction.user, 'voice', None)
             if not voice_state or not voice_state.channel:
@@ -545,36 +568,57 @@ class Music(commands.Cog):
                     ephemeral=True
                 )
                 return
+            
             await interaction.response.defer(ephemeral=True)
             vc_channel = voice_state.channel
             vc = await self._ensure_voice_connection(interaction, vc_channel)
+            
             if not vc:
                 await interaction.followup.send(
                     embed=create_connection_error_embed(),
                     ephemeral=True
                 )
                 return
-            # Если query — это URI (выбран из автокомплита), ищем по нему, иначе ищем по тексту
-            is_uri = query.startswith("http://") or query.startswith("https://")
-            if is_uri:
-                search_query = query
-            else:
-                search_query = query
-            results = await asyncio.wait_for(wavelink.Playable.search(search_query, source=wavelink.TrackSource.SoundCloud), timeout=5.0)
+            
+            # Determine search source based on query type
+            is_uri = query.startswith(("http://", "https://"))
+            source = None if is_uri else wavelink.TrackSource.SoundCloud
+            
+            results = await asyncio.wait_for(
+                wavelink.Playable.search(query, source=source), 
+                timeout=10.0
+            )
+            
             if not results:
                 await interaction.followup.send(
                     embed=create_search_error_embed(query),
                     ephemeral=True
                 )
                 return
+            
             track = results[0]
             track.requester = interaction.user
             was_added = await vc.add_track(track)
-            embed = create_track_added_embed(track, len(vc.playlist) if was_added else 1)
+            
+            embed = create_track_added_embed(
+                track, 
+                len(vc.playlist) if was_added else 1
+            )
             await interaction.followup.send(embed=embed, ephemeral=True)
+            
+        except asyncio.TimeoutError:
+            await interaction.followup.send(
+                embed=create_error_embed("Тайм-аут", "Поиск занял слишком много времени"),
+                ephemeral=True
+            )
+        except wavelink.LavalinkException as e:
+            await interaction.followup.send(
+                embed=create_error_embed("Ошибка Lavalink", str(e)),
+                ephemeral=True
+            )
         except Exception as e:
             await interaction.followup.send(
-                embed=create_error_embed("Ошибка", f"{e}"),
+                embed=create_error_embed("Ошибка", str(e)),
                 ephemeral=True
             )
 
