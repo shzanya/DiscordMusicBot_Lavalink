@@ -6,6 +6,7 @@ import wavelink
 from typing import List, Optional
 
 from config.constants import Colors
+from ui.embed_now_playing import create_progress_bar
 from utils.formatters import (
     format_duration, 
     format_track_info, 
@@ -74,34 +75,44 @@ def create_queue_embed(
 
 
 def create_track_embed(
-    track: wavelink.Playable, 
-    title: Optional[str] = None, 
-    color: Optional[int] = None,
-    description_prefix: str = ""
+    track: wavelink.Playable,
+    requester: discord.Member,
+    position: int,
+    duration: int
 ) -> discord.Embed:
-    """🎵 Создание простого embed для трека"""
+    """🎵 Создание embed в стиле Spotify"""
+
     artist = getattr(track, 'author', 'Неизвестный исполнитель')
-    track_title = format_track_title(track, max_length=60)
+    title = getattr(track, 'title', 'Неизвестный трек')
     uri = getattr(track, 'uri', '')
-    
-    # Создаем ссылку на трек
-    track_link = f"**[{track_title}]({uri})**" if uri else f"**{track_title}**"
-    
+
+    # Ссылка на трек
+    track_link = f"**[{title}]({uri})**" if uri else f"**{title}**"
+
+    # Прогресс-бар
+    progress_bar = create_progress_bar(position, duration, 9)
+
+    # Время
+    current_time = format_duration(int(position))
+    total_time = format_duration(int(duration)) if duration else "∞"
+
+    # Описание
+    description = f"{track_link}\n\n"
+    description += f"> Запрос от {requester.display_name}:\n"
+    description += f"{progress_bar}\n\n"
+    description += f"Играет — `[{current_time}/{total_time}]`"
+
     embed = discord.Embed(
-        title=title or truncate_text(artist, 50),
-        description=f"{description_prefix}{track_link}",
-        color=color or Colors.SUCCESS
+        title=artist,
+        description=description,
+        color=Colors.SPOTIFY
     )
-    
-    # Добавляем обложку
-    artwork = getattr(track, 'artwork', None) or getattr(track, 'thumbnail', None)
+
+    # Обложка
+    artwork = getattr(track, 'artwork', None)
     if artwork:
         embed.set_thumbnail(url=artwork)
-    
-    # Добавляем длительность в footer
-    duration = format_duration(track.length or 0)
-    embed.set_footer(text=f"Длительность: {duration}")
-    
+
     return embed
 
 
@@ -125,13 +136,31 @@ def create_track_added_embed(track: wavelink.Playable, position: int) -> discord
     )
 
 
-def create_now_playing_embed(track: wavelink.Playable) -> discord.Embed:
-    """▶️ Создание embed для воспроизводимого трека"""
-    track_info = format_track_info(track)
-    return discord.Embed(
-        description=f"Воспроизводится: {track_info}",
-        color=Colors.SUCCESS
+def create_now_playing_embed(track: wavelink.Playable, player, requester: Optional[discord.Member] = None) -> discord.Embed:
+    """▶️ Создание embed для воспроизводимого трека в Spotify-стиле"""
+    artist = getattr(track, 'author', 'Неизвестный исполнитель')
+    title = getattr(track, 'title', 'Неизвестный трек')
+    uri = getattr(track, 'uri', '')
+    artwork = getattr(track, 'artwork', None)
+    position = int(getattr(player, 'position', 0) or 0)
+    duration = getattr(track, 'length', 0)
+
+    track_link = f"**[{title}]({uri})**" if uri else f"**{title}**"
+    progress = f"{format_duration(position)}/{format_duration(duration)}"
+
+    embed = discord.Embed(
+        title=artist,
+        description=f"{track_link}\n\n**Играет — [{progress}]**",
+        color=Colors.SUCCESS,
+        timestamp=discord.utils.utcnow()
     )
+
+    if artwork:
+        embed.set_thumbnail(url=artwork)
+    if requester:
+        embed.set_footer(text=f"Запросил: {requester.display_name}")
+
+    return embed
 
 
 def create_empty_queue_embed() -> discord.Embed:
@@ -146,14 +175,30 @@ def create_empty_queue_embed() -> discord.Embed:
     )
 
 
-def create_track_finished_embed(track_title: str) -> discord.Embed:
-    """⏹️ Создание embed для завершенного трека"""
-    formatted_title = truncate_text(track_title, 100)
-    return discord.Embed(
-        description=f"**> Статус:** Прослушано — {formatted_title}",
+def create_track_finished_embed(track: wavelink.Playable, position: int) -> discord.Embed:
+    """⏹️ Создание embed для завершенного трека в Spotify-стиле"""
+
+    artist = getattr(track, 'author', 'Неизвестный исполнитель')
+    title = getattr(track, 'title', 'Неизвестный трек')
+    uri = getattr(track, 'uri', '')
+    artwork = getattr(track, 'artwork', None)
+
+    track_link = f"**[{title}]({uri})**" if uri else f"**{title}**"
+
+    # Время воспроизведения (позиция)
+    listened_time = format_duration(int(position))
+
+    embed = discord.Embed(
+        title=artist,
+        description=f"{track_link}\n\n**> Статус:** Прослушано ({listened_time})",
         color=Colors.PRIMARY,
         timestamp=discord.utils.utcnow()
     )
+
+    if artwork:
+        embed.set_thumbnail(url=artwork)
+
+    return embed
 
 
 def create_search_error_embed(query: str) -> discord.Embed:
@@ -290,3 +335,4 @@ def create_loop_embed(mode: str) -> discord.Embed:
         description=f"{mode_emoji} {mode_text}",
         color=Colors.SUCCESS
     )
+

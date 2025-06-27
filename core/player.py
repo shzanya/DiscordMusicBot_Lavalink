@@ -6,8 +6,6 @@ from typing import Optional
 from dataclasses import dataclass
 import logging
 import asyncio
-from config.settings import Settings
-from config.constants import Colors
 
 
 class LoopMode(Enum):

@@ -6,6 +6,8 @@ from config.constants import emojis
 from ui.embed_now_playing import create_now_playing_embed
 from utils.formatters import format_duration
 from core.player import HarmonyPlayer
+import asyncio
+
 
 from .track_select import TrackSelect
 
@@ -50,8 +52,17 @@ class MusicPlayerView(ui.View):
     def destroy(self) -> None:
         self._is_destroyed = True
         self.stop()
+
         if hasattr(self.player, 'view') and self.player.view is self:
             self.player.view = None
+
+        # Попробовать удалить view из сообщения
+        if self.message:
+            try:
+                asyncio.create_task(self.message.edit(view=None))
+            except Exception as e:
+                logger.warning(f"Не удалось удалить view из сообщения при destroy(): {e}")
+
 
     async def refresh_select_menu(self) -> None:
         if self._is_destroyed:
@@ -95,20 +106,28 @@ class MusicPlayerView(ui.View):
 
     @ui.button(emoji=emojis.NK_BACK(), style=discord.ButtonStyle.secondary, custom_id="music:previous")
     async def previous_button(self, interaction: discord.Interaction, button: ui.Button) -> None:
-        if not hasattr(self.player, "play_previous"):
-            await self._safe_defer_or_respond(interaction, "⚠️ Плеер не поддерживает переход к предыдущему треку")
-            return
         try:
+            if getattr(self.player, "_handling_track_end", False):
+                await self._safe_defer_or_respond(interaction, "⏳ Подождите завершения текущего трека...")
+                return
+
+            if self.player.current_index <= 0:
+                await self._safe_defer_or_respond(interaction, "📜 Нет предыдущих треков в плейлисте")
+                return
+
+            await self._safe_defer_or_respond(interaction)
             success = await self.player.play_previous()
-            if success and self.player.current:
-                embed = await create_now_playing_embed(self.player.current, self.player, interaction.user)
-                await self.message.edit(embed=embed, view=self)
-                await self._safe_defer_or_respond(interaction)
-            else:
-                await self._safe_defer_or_respond(interaction, "❌ Предыдущий трек недоступен")
+
+            if not success:
+                await interaction.followup.send("❌ Не удалось воспроизвести предыдущий трек", ephemeral=True)
+                return
+
+            await self.refresh_select_menu()
+
         except Exception as e:
             logger.error(f"Previous track error: {e}")
             await self._safe_defer_or_respond(interaction, "⚠️ Ошибка при переходе к предыдущему треку")
+
 
     @ui.button(emoji=emojis.NK_MUSICPLAY(), style=discord.ButtonStyle.secondary, custom_id="music:pause")
     async def pause_button(self, interaction: discord.Interaction, button: ui.Button) -> None:
@@ -121,7 +140,8 @@ class MusicPlayerView(ui.View):
             if not self.message:
                 logger.warning("self.message is None during pause_button, attempting to create new message")
                 if self.player.current and self.player.text_channel:
-                    embed = await create_now_playing_embed(self.player.current, self.player, self.requester or interaction.user)
+                    embed = create_now_playing_embed(self.player.current, self.player, self.requester or interaction.user)
+
                     self.message = await self.player.text_channel.send(embed=embed, view=self)
                     self.player.now_playing_message = self.message
                     logger.info("Created new now_playing_message in pause_button")
@@ -134,52 +154,33 @@ class MusicPlayerView(ui.View):
             button.emoji = emojis.NK_MUSICPAUSE() if not is_paused else emojis.NK_MUSICPLAY()
             await self.message.edit(view=self)
             if self.player.current:
-                embed = await create_now_playing_embed(self.player.current, self.player, self.requester or interaction.user)
+                embed = create_now_playing_embed(self.player.current, self.player, self.requester or interaction.user)
+
                 await self.message.edit(embed=embed, view=self)
             await self._safe_defer_or_respond(interaction)
         except Exception as e:
             logger.error(f"Pause/resume error: {e}")
             await self._safe_defer_or_respond(interaction, "⚠️ Ошибка при изменении воспроизведения")
 
+
     @ui.button(emoji=emojis.NK_NEXT(), style=discord.ButtonStyle.secondary, custom_id="music:skip")
     async def skip_button(self, interaction: discord.Interaction, button: ui.Button) -> None:
         try:
-            if not self.message and self.player.now_playing_message:
-                self.message = self.player.now_playing_message
-                logger.debug("Updated self.message from player.now_playing_message in skip_button")
-
-            if not self.message:
-                logger.warning("self.message is None during skip_button, attempting to create new message")
-                if self.player.current and self.player.text_channel:
-                    embed = await create_now_playing_embed(self.player.current, self.player, interaction.user)
-                    self.message = await self.player.text_channel.send(embed=embed, view=self)
-                    self.player.now_playing_message = self.message
-                    logger.info("Created new now_playing_message in skip_button")
-                else:
-                    await self._safe_defer_or_respond(interaction, "⚠️ Не удалось обновить интерфейс: нет текущего трека или канала")
-                    return
-
             if getattr(self.player, "_handling_track_end", False):
-                await self._safe_defer_or_respond(interaction, "⚠️ Подождите завершения предыдущего трека...")
+                await self._safe_defer_or_respond(interaction, "⏳ Подождите завершения текущего трека...")
                 return
 
-            if self.player.is_queue_empty():
-                await self._safe_defer_or_respond(interaction, "📭 В очереди нет треков для пропуска.")
+            if self.player.current_index >= len(self.player.playlist) - 1:
+                await self._safe_defer_or_respond(interaction, "📭 В плейлисте нет треков для пропуска")
                 return
-
-            await self.player.skip()
-
-            if self.player.current:
-                embed = await create_now_playing_embed(self.player.current, self.player, interaction.user)
-                await self.message.edit(embed=embed, view=self)
 
             await self._safe_defer_or_respond(interaction)
+            await self.player.skip()
             await self.refresh_select_menu()
 
         except Exception as e:
             logger.error(f"Skip error: {e}")
             await self._safe_defer_or_respond(interaction, "⚠️ Ошибка при пропуске трека")
-
 
     @ui.button(emoji=emojis.NK_POVTOR(), style=discord.ButtonStyle.secondary, custom_id="music:loop")
     async def loop_button(self, interaction: discord.Interaction, button: ui.Button) -> None:
@@ -331,6 +332,8 @@ class MusicPlayerView(ui.View):
         except Exception as e:
             logger.error(f"Lyrics error: {e}")
             await self._safe_defer_or_respond(interaction, "⚠️ Ошибка при получении текста песни")
+
+
     @ui.button(emoji=emojis.NK_HEART(), style=discord.ButtonStyle.secondary, custom_id="music:like")
     async def like_button(self, interaction: discord.Interaction, button: ui.Button) -> None:
         try:

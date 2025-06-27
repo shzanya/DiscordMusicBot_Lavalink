@@ -24,7 +24,8 @@ def create_progress_bar(position: float, duration: float, paused: bool = False, 
     bar += emojis.NK_MUSICLINEENDVISIBLE()
     return play_icon + bar
 
-async def create_now_playing_embed(track: wavelink.Playable, player: HarmonyPlayer, requester: discord.Member) -> discord.Embed:
+def create_now_playing_embed(track: wavelink.Playable, player: HarmonyPlayer, requester: discord.Member) -> discord.Embed:
+
     if not track:
         return discord.Embed(title="Нет текущего трека", color=0x242429)
     
@@ -34,7 +35,9 @@ async def create_now_playing_embed(track: wavelink.Playable, player: HarmonyPlay
     track_link = f"**[{title}]({uri})**" if uri else f"**{title}**"
     
     try:
-        position = player.position if player.position > 0 else 0  # Use position directly, no sleep
+        raw_position = player.position if player.position > 0 else 0
+        speed = getattr(player, 'speed_override', 1.0)
+        position = raw_position / speed if speed != 0 else raw_position
     except Exception as e:
         print(f"[DEBUG] Position fetch error: {e}")
         position = 0

@@ -276,40 +276,6 @@ def create_info_embed(title: str, description: str) -> discord.Embed:
     )
 
 
-def create_track_embed(track: wavelink.Playable, title: str = None, color = None, player: HarmonyPlayer = None, requester: discord.Member = None) -> discord.Embed:
-    """🎵 Универсальная функция для создания embed трека"""
-    
-    # Если переданы player и requester, используем create_now_playing_embed
-    if player and requester and hasattr(player, 'position'):
-        return create_now_playing_embed(track, player, requester)
-    
-    # Иначе создаем простой embed без прогресс-бара
-    artist = getattr(track, 'author', 'Неизвестный исполнитель')
-    track_title = getattr(track, 'title', 'Неизвестный трек')
-    uri = getattr(track, 'uri', '')
-    
-    # Создаем ссылку на трек
-    track_link = f"**[{track_title}]({uri})**" if uri else f"**{track_title}**"
-    
-    # Используем переданный title или стандартный
-    embed_title = title if title else artist
-    embed_color = color if color else Colors.SUCCESS
-    
-    embed = discord.Embed(
-        title=embed_title,
-        description=track_link,
-        color=embed_color
-    )
-    
-    # Добавляем обложку трека
-    if hasattr(track, 'artwork') and track.artwork:
-        embed.set_thumbnail(url=track.artwork)
-    elif hasattr(track, 'thumbnail') and track.thumbnail:
-        embed.set_thumbnail(url=track.thumbnail)
-    
-    return embed
-
-
 # Очистка при завершении работы бота
 def cleanup_updater():
     """Очистка ресурсов при завершении работы"""

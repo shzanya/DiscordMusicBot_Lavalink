@@ -3,7 +3,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict
 import discord
+import time
 from discord.ext import commands
+import wavelink
 
 from config.constants import Colors
 from core.player import HarmonyPlayer
@@ -150,6 +152,64 @@ class AudioEffectsManager:
     }
 
     @classmethod
+    async def set_effects(cls, player: HarmonyPlayer, **kwargs):
+        try:
+            filters = wavelink.Filters()
+
+            if kwargs.get('bass', False):
+                filters.equalizer.set(bands=[
+                    {"band": 0, "gain": 0.6},
+                    {"band": 1, "gain": 0.7},
+                    {"band": 2, "gain": 0.8},
+                    {"band": 3, "gain": 0.4},
+                    {"band": 4, "gain": 0.0},
+                ])
+            if kwargs.get('treble', False):
+                filters.equalizer.set(bands=[
+                    {"band": 10, "gain": 0.5},
+                    {"band": 11, "gain": 0.6},
+                    {"band": 12, "gain": 0.7},
+                    {"band": 13, "gain": 0.8},
+                    {"band": 14, "gain": 0.6},
+                ])
+            if kwargs.get('nightcore', False):
+                filters.timescale.set(speed=1.2, pitch=1.2, rate=1.0)
+            if kwargs.get('vaporwave', False):
+                filters.timescale.set(speed=0.8, pitch=0.8, rate=1.0)
+                filters.equalizer.set(bands=[
+                    {"band": 0, "gain": -0.2},
+                    {"band": 1, "gain": -0.2},
+                    {"band": 2, "gain": -0.1},
+                ])
+            if kwargs.get('karaoke', False):
+                filters.karaoke.set(level=1.0, mono_level=1.0, filter_band=220.0, filter_width=100.0)
+            if kwargs.get('tremolo', False):
+                filters.tremolo.set(frequency=2.0, depth=0.5)
+            if kwargs.get('vibrato', False):
+                filters.vibrato.set(frequency=2.0, depth=0.5)
+            if kwargs.get('distortion', False):
+                filters.distortion.set(
+                    sin_offset=0.0, sin_scale=1.0,
+                    cos_offset=0.0, cos_scale=1.0,
+                    tan_offset=0.0, tan_scale=1.0,
+                    offset=0.0, scale=1.2
+                )
+
+            await player.set_filters(filters)
+            logger.info(f"🎚️ [AudioEffectsManager] Applied filters: {kwargs}")
+        except Exception as e:
+            logger.error(f"❌ Failed to set effects via AudioEffectsManager: {e}")
+            raise
+
+        player.speed_override = 1.0
+        if kwargs.get('nightcore'):
+            player.speed_override = 1.2
+        elif kwargs.get('vaporwave'):
+            player.speed_override = 0.8
+
+        player.start_time_real = time.time()
+
+    @classmethod
     def get_effect_config(cls, effect_type: EffectType) -> EffectConfig:
         return cls.EFFECT_CONFIGS.get(effect_type)
 
@@ -214,6 +274,7 @@ class AudioEffectsManager:
         except Exception as e:
             logger.error(f"❌ Failed apply_effects: {e}")
             return False
+
 
 class EffectsView(discord.ui.View):
     """Интерфейс управления эффектами"""
@@ -364,6 +425,8 @@ class ClearEffectsButton(discord.ui.Button):
         new_view = EffectsView(view.player)
         await interaction.response.edit_message(embed=embed, view=new_view)
 
+
+
 class RefreshButton(discord.ui.Button):
     """Кнопка обновления интерфейса"""
     
@@ -412,6 +475,7 @@ class RefreshButton(discord.ui.Button):
         
         new_view = EffectsView(view.player)
         await interaction.response.edit_message(embed=embed, view=new_view)
+
 
 class EffectsCommands(commands.Cog, name="🎚️ Эффекты"):
     """🎚️ Управление звуковыми эффектами"""
@@ -466,6 +530,7 @@ class EffectsCommands(commands.Cog, name="🎚️ Эффекты"):
         # Создаем интерфейс
         view = EffectsView(player)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
 
 
 async def setup(bot):
