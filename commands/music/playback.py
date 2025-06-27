@@ -22,6 +22,10 @@ from ui.music_embeds import (
     create_track_added_embed,
     create_track_finished_embed,
 )
+
+
+
+
 from ui.progress_updater import (
     cleanup_updater,
     now_playing_updater,
@@ -311,7 +315,10 @@ class HarmonyPlayer(wavelink.Player):
                 self.speed_override = getattr(self, 'speed_override', 1.0)
 
                 # Запускаем воспроизведение
+                logger.info(f"play_track starting for: {track.title}")
                 await self.play(track, **kwargs)
+            
+                logger.info(f"play_track finished for: {track.title}")
 
                 # Отправляем now playing сообщение
                 if self.text_channel and not self._is_destroyed:
@@ -378,24 +385,23 @@ class HarmonyPlayer(wavelink.Player):
         return await self.play_by_index(self.current_index + 1)
 
     async def add_track(self, track: wavelink.Playable):
-            track_uri = getattr(track, 'uri', getattr(track, 'identifier', ''))
-            # Проверяем, нет ли трека уже в плейлисте
-            if track_uri not in {getattr(t, 'uri', getattr(t, 'identifier', '')) for t in self.playlist}:
-                track.requester = track.requester or (self.text_channel.guild.me if self.text_channel else None)
-                self.playlist.append(track)
-                logger.info(f"Added track: {track.title}")
-                # Добавляем трек в историю при добавлении
-                if track_uri and track_uri not in {getattr(t, 'uri', getattr(t, 'identifier', '')) for t in self.history}:
-                    self.history.append(track)
-                    self.history = self.history[-self.max_history_size:]
-                    logger.debug(f"Added to history: {track.title}")
-            else:
-                logger.info(f"Track already in playlist: {track.title}")
+        track_uri = getattr(track, 'uri', getattr(track, 'identifier', ''))
+        if track_uri not in {getattr(t, 'uri', getattr(t, 'identifier', '')) for t in self.playlist}:
+            track.requester = track.requester or (self.text_channel.guild.me if self.text_channel else None)
+            self.playlist.append(track)
+            logger.info(f"Added track: {track.title}")
+        else:
+            logger.info(f"Track already in playlist: {track.title}")
 
-            # Автостарт, если плеер не играет
-            if self._current_track is None or self.current_index == -1:
-                self.current_index = 0
-                await self.play_by_index(0)
+        should_autostart = self._current_track is None or self.current_index == -1
+
+        if should_autostart:
+            self.current_index = 0
+            logger.info("🚀 Autostarting playback from add_track")
+            await self.play_by_index(0)
+            return False
+
+        return True
 
     async def load_playlist(self, tracks: list[wavelink.Playable]):
         self.playlist = tracks
@@ -750,10 +756,18 @@ class Music(commands.Cog):
                 track.requester = interaction.user
                 logger.info(f"Found track: {track.title} by {track.author}")
 
-                await vc.add_track(track)
-                if not vc.playing and not vc.paused:
+                was_added_to_queue = await vc.add_track(track)
+
+                if was_added_to_queue:
                     embed = create_track_added_embed(track, len(vc.playlist))
                     await interaction.followup.send(embed=embed, ephemeral=True)
+                else:
+                    # ✅ Трек начал играть сразу — но мы НЕ вызываем play_by_index!
+                    # play_track уже вызван из add_track, и _current_track будет установлен внутри play_track
+                    logger.info(f"Track {track.title} started playing immediately")
+                    embed = create_track_added_embed(track, position=1)
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+
 
         except discord.InteractionResponded:
             logger.warning("Play command: Interaction already responded")
@@ -777,81 +791,82 @@ class Music(commands.Cog):
             except Exception as send_error:
                 logger.error(f"Failed to send error response: {send_error}")
 
+    @commands.Cog.listener()
     async def on_wavelink_track_end(self, payload: wavelink.TrackEndEventPayload) -> None:
-            player: HarmonyPlayer = payload.player
+        player: HarmonyPlayer = payload.player
 
-            if not player or getattr(player, "_is_destroyed", False):
-                logger.warning("❌ Invalid or destroyed player in track end event")
-                return
+        if not player or getattr(player, "_is_destroyed", False):
+            logger.warning("❌ Invalid or destroyed player in track end event")
+            return
 
-            if getattr(player, "_handling_track_end", False):
-                logger.debug("Track end already handled")
-                return
+        if getattr(player, "_handling_track_end", False):
+            logger.debug("Track end already handled")
+            return
 
-            if payload.reason == "replaced":
-                logger.info("🔁 Track replaced manually — skipping handler logic")
-                return
+        if payload.reason == "replaced":
+            logger.info("🔁 Track replaced manually — skipping handler logic")
+            return
 
-            player._handling_track_end = True
+        player._handling_track_end = True
 
-            try:
-                if player._current_track:
-                    track_title = getattr(player._current_track, 'title', 'Unknown Track')
-                    logger.info(f"⏹️ Трек завершен: {track_title}")
+        try:
+            if player._current_track:
+                track_title = getattr(player._current_track, 'title', 'Unknown Track')
+                logger.info(f"⏹️ Трек завершен: {track_title}")
 
-                    # История уже обновлена в add_track, но проверяем на всякий случай
-                    track_uri = getattr(player._current_track, 'uri', getattr(player._current_track, 'identifier', ''))
-                    if track_uri and track_uri not in {getattr(t, 'uri', getattr(t, 'identifier', '')) for t in player.history}:
-                        player.history.append(player._current_track)
-                        player.history = player.history[-player.max_history_size:]
-                        logger.debug(f"Added to history: {track_title}")
+                # История уже обновлена в add_track, но проверяем на всякий случай
+                track_uri = getattr(player._current_track, 'uri', getattr(player._current_track, 'identifier', ''))
+                if track_uri and track_uri not in {getattr(t, 'uri', getattr(t, 'identifier', '')) for t in player.history}:
+                    player.history.append(player._current_track)
+                    player.history = player.history[-player.max_history_size:]
+                    logger.debug(f"Added to history: {track_title}")
 
-                    # Отключаем автообновление
-                    now_playing_updater.unregister_message(player.guild.id)
+                # Отключаем автообновление
+                now_playing_updater.unregister_message(player.guild.id)
 
-                    # Обновляем или отправляем embed "Прослушано"
-                    if player.text_channel:
-                        embed = create_track_finished_embed(player._current_track, position=payload.track.length)
-                        try:
-                            if player.now_playing_message:
-                                try:
-                                    await player.now_playing_message.edit(embed=embed, view=None)
-                                    logger.info("✅ Обновлен embed завершенного трека")
-                                except discord.HTTPException as e:
-                                    logger.warning(f"Не удалось обновить embed: {e}")
-                                    await player.text_channel.send(embed=embed)
-                                    logger.info("✅ Отправлен новый embed завершенного трека после ошибки")
-                            else:
+                # ВСЕГДА обновляем embed на "Прослушано"
+                if player.text_channel:
+                    embed = create_track_finished_embed(player._current_track, position=payload.track.length)
+                    try:
+                        if player.now_playing_message:
+                            try:
+                                await player.now_playing_message.edit(embed=embed, view=None)
+                                logger.info("✅ Обновлен embed завершенного трека")
+                            except discord.HTTPException as e:
+                                logger.warning(f"Не удалось обновить embed: {e}")
                                 await player.text_channel.send(embed=embed)
-                                logger.info("✅ Отправлен новый embed завершенного трека")
-                        except discord.HTTPException as e:
-                            logger.error(f"Не удалось отправить embed: {e}")
-
-                # Очищаем текущее сообщение и трек
-                player.now_playing_message = None
-                player._current_track = None
-
-                # Проверяем, есть ли следующий трек
-                if not player.playlist or player.current_index >= len(player.playlist) - 1:
-                    logger.info("🚪 Очередь пуста — отключаюсь")
-                    if player.text_channel:
-                        try:
-                            embed = create_empty_queue_embed()
+                                logger.info("✅ Отправлен новый embed завершенного трека после ошибки")
+                        else:
                             await player.text_channel.send(embed=embed)
-                            logger.info("✅ Отправлен embed пустой очереди")
-                        except Exception as e:
-                            logger.error(f"❌ Ошибка при отправке embed пустой очереди: {e}")
-                    await player.cleanup_disconnect()
-                    return
+                            logger.info("✅ Отправлен новый embed завершенного трека")
+                    except discord.HTTPException as e:
+                        logger.error(f"Не удалось отправить embed: {e}")
 
-                # Переходим к следующему треку
-                player.current_index += 1
-                await player.play_by_index(player.current_index)
+            # Очищаем текущее сообщение и трек
+            player.now_playing_message = None
+            player._current_track = None
 
-            except Exception as e:
-                logger.error(f"❌ Track end handler failed: {e}")
-            finally:
-                player._handling_track_end = False
+            # Проверяем, есть ли следующий трек
+            if not player.playlist or player.current_index >= len(player.playlist) - 1:
+                logger.info("🚪 Очередь пуста — отключаюсь")
+                if player.text_channel:
+                    try:
+                        embed = create_empty_queue_embed()
+                        await player.text_channel.send(embed=embed)
+                        logger.info("✅ Отправлен embed пустой очереди")
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка при отправке embed пустой очереди: {e}")
+                await player.cleanup_disconnect()
+                return
+
+            # Переходим к следующему треку
+            player.current_index += 1
+            await player.play_by_index(player.current_index)
+
+        except Exception as e:
+            logger.error(f"❌ Track end handler failed: {e}")
+        finally:
+            player._handling_track_end = False
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState) -> None:
