@@ -1,6 +1,6 @@
 import asyncio
-import math
-from typing import Dict, Optional
+
+from typing import Dict
 
 import discord
 import wavelink
@@ -239,45 +239,6 @@ def create_track_embed_spotify_style(track: wavelink.Playable, player: HarmonyPl
     return embed
 
 
-def create_queue_embed(
-    guild: discord.Guild,
-    now_playing: wavelink.Playable,
-    queue: list,
-    page: int,
-    total_pages: int,
-    user: discord.User
-) -> discord.Embed:
-    embed = discord.Embed(
-        title=f"—・Очередь сервера {guild.name}",
-        description=f"**Сейчас играет:** [{now_playing.title}]({now_playing.uri})\n",
-        color=Colors.MUSIC
-    )
-
-    duration = now_playing.length // 1000
-    minutes = duration // 60
-    seconds = duration % 60
-    requester = getattr(now_playing, "requester", None)
-    requester_name = f"`{requester.display_name}`" if requester else "`Неизвестно`"
-
-    if page == 1:
-        embed.description += f"\n**1)** [{now_playing.title}]({now_playing.uri}) | `{minutes:02}:{seconds:02}` | {requester_name}"
-        start_index = 2
-    else:
-        start_index = 1 + (page - 1) * 10
-
-    for i, track in enumerate(queue, start=start_index):
-        duration = track.length // 1000
-        minutes = duration // 60
-        seconds = duration % 60
-        requester = getattr(track, "requester", None)
-        requester_name = f"`{requester.display_name}`" if requester else "`Неизвестно`"
-        embed.description += f"\n**{i})** [{track.title}]({track.uri}) | `{minutes:02}:{seconds:02}` | {requester_name}"
-
-    embed.set_thumbnail(url=user.display_avatar.url)
-    embed.set_footer(text=f"Страница: {page}/{total_pages}")
-    return embed
-
-
 
 def create_error_embed(title: str, description: str) -> discord.Embed:
     """❌ Создание embed для ошибок"""
@@ -291,7 +252,7 @@ def create_error_embed(title: str, description: str) -> discord.Embed:
 def create_success_embed(title: str, description: str) -> discord.Embed:
     """✅ Создание embed для успешных операций"""
     return discord.Embed(
-        title=f"{emojis.SUCCESS()} {title}",
+        title=f"✅ {title}",
         description=description,
         color=Colors.SUCCESS
     )
@@ -300,7 +261,7 @@ def create_success_embed(title: str, description: str) -> discord.Embed:
 def create_warning_embed(title: str, description: str) -> discord.Embed:
     """⚠️ Создание embed для предупреждений"""
     return discord.Embed(
-        title=f"{emojis.WARNING()} {title}",
+        title=f"⚠️ {title}",
         description=description,
         color=Colors.WARNING
     )
@@ -309,7 +270,7 @@ def create_warning_embed(title: str, description: str) -> discord.Embed:
 def create_info_embed(title: str, description: str) -> discord.Embed:
     """ℹ️ Создание embed для информации"""
     return discord.Embed(
-        title=f"{emojis.INFO()} {title}",
+        title=f"ℹ️ {title}",
         description=description,
         color=Colors.INFO
     )

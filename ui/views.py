@@ -207,7 +207,7 @@ class MusicPlayerView(ui.View):
             embed = discord.Embed(
                 title="📍 Позиция воспроизведения",
                 description=f"**Позиция:** `{pos_formatted}` / `{dur_formatted}`\n{progress_bar}",
-                color=0x2B2D31
+                color=0x242429
             )
             await self._safe_defer_or_respond(interaction)
             await interaction.followup.send(embed=embed, ephemeral=True)
@@ -230,7 +230,7 @@ class MusicPlayerView(ui.View):
             embed = discord.Embed(
                 title=f"{emojis.NK_VOLUME()} Громкость",
                 description=f"**Текущая громкость:** {volume}%",
-                color=0x2B2D31
+                color=0x242429
             )
             await self._safe_defer_or_respond(interaction)
             await interaction.followup.send(embed=embed, ephemeral=True)
@@ -245,7 +245,7 @@ class MusicPlayerView(ui.View):
             embed = discord.Embed(
                 title="⏹️ Воспроизведение остановлено",
                 description="Плеер отключен от голосового канала",
-                color=0x2B2D31
+                color=0x242429
             )
             await interaction.response.edit_message(embed=embed, view=None)
             self.destroy()
@@ -275,7 +275,7 @@ class MusicPlayerView(ui.View):
                     embed=discord.Embed(
                         title="❌ Текст не найден",
                         description=f"Не удалось найти текст для **{title}**.",
-                        color=0x2B2D31
+                        color=0x242429
                     ),
                     ephemeral=True
                 )
@@ -298,7 +298,7 @@ class MusicPlayerView(ui.View):
                     embed = discord.Embed(
                         title=f"📄 Текст: {title}",
                         description=chunks[self.page],
-                        color=0x2B2D31
+                        color=0x242429
                     )
                     embed.set_footer(text=f"Страница {self.page + 1}/{total_pages}")
                     return embed
@@ -345,7 +345,7 @@ class MusicPlayerView(ui.View):
                     f"{user_mention}, в какой плейлист добавить трек "
                     f"**{track_title}**?\n\n*Напишите название плейлиста или выберите:*"
                 ),
-                color=0x2B2D31
+                color=0x242429
             )
             embed.add_field(
                 name="Популярные плейлисты", 

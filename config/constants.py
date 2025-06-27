@@ -101,14 +101,14 @@ class Emojis:
     def NK_VOLUME(cls): return cls._get_emoji("NK_VOLUME")
 
 class Colors:
-    PRIMARY = 0x2B2D31
-    SUCCESS = 0x2B2D31
-    WARNING = 0x2B2D31
+    PRIMARY = 0x242429
+    SUCCESS = 0x242429
+    WARNING = 0x242429
     ERROR = 0xEA5455
-    INFO = 0x2B2D31
-    MUSIC = 0x2B2D31
-    PREMIUM = 0x2B2D31
-    SPOTIFY = 0x2B2D31
+    INFO = 0x242429
+    MUSIC = 0x242429
+    PREMIUM = 0x242429
+    SPOTIFY = 0x242429
 
-Emojis.set_color("crimson")
+Emojis.set_color("red")
 emojis = Emojis

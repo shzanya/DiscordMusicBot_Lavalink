@@ -69,32 +69,32 @@ class HarmonyBot(commands.Bot):
         cog_structure = {
             'commands/music': [
                 'playback',
-                'queue', 
+                'queue',
                 'effects',
-                'favorites',
-                'lyrics',
-                'radio'
+                # 'favorites',  # ⛔ ModuleNotFoundError: services.database
+                # 'lyrics',     # ⛔ файл не найден
+                # 'radio'       # ⛔ файл не найден
             ],
             'commands/playlist': [
-                'management',
-                'sharing',
-                'import_export'
+                # 'management',     # ⛔ ModuleNotFoundError
+                # 'sharing',        # ⛔ ModuleNotFoundError
+                # 'import_export'   # ⛔ файл не найден
             ],
             'commands/admin': [
-                'settings',
-                'permissions',
-                'moderation'
+                # 'settings',     # ⛔ ModuleNotFoundError
+                # 'permissions',  # ⛔ ModuleNotFoundError
+                # 'moderation'    # ⛔ файл не найден
             ],
             'commands/utility': [
-                'help',
-                'info',
-                'stats'
+                # 'help',   # ⛔ файл не найден
+                # 'info',   # ⛔ файл не найден
+                # 'stats'   # ⛔ файл не найден
             ],
             'commands/Emoji': [
                 'EmojiManager'
             ]
         }
-        
+
         self.logger.info("📂 Начинаю загрузку когов...")
         
         # Очистка существующих когов

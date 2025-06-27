@@ -690,7 +690,7 @@ class Music(commands.Cog):
                 try:
                     await player.now_playing_message.edit(embed=discord.Embed(
                         description=f"**> Статус:** Прослушано — {getattr(payload.track, 'title', 'Без названия')}",
-                        color=0x2B2D31,
+                        color=0x242429,
                         timestamp=discord.utils.utcnow()
                     ), view=None)
                     logger.info("✅ Updated now playing message")
@@ -704,7 +704,7 @@ class Music(commands.Cog):
                     try:
                         await player.text_channel.send(embed=discord.Embed(
                             description="—・Пустая очередь сервера\nЯ покинула канал, потому что в очереди не осталось треков",
-                            color=0x2B2D31,
+                            color=0x242429,
                             timestamp=discord.utils.utcnow()
                         ))
                     except Exception as e:

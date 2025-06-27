@@ -465,7 +465,8 @@ class EffectsCommands(commands.Cog, name="🎚️ Эффекты"):
 
         # Создаем интерфейс
         view = EffectsView(player)
-        await interaction.response.send_message(embed=embed, view=view)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
 
 async def setup(bot):
     await bot.add_cog(EffectsCommands(bot))
