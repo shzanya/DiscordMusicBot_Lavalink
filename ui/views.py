@@ -207,11 +207,14 @@ class MusicPlayerView(BaseEmojiView):
     async def on_error(
         self, interaction: discord.Interaction, error: Exception, item: ui.Item
     ) -> None:
-        logger.error(f"View error in {item.custom_id}: {error}")
-        if not interaction.response.is_done():
-            await interaction.response.send_message(
-                "❌ Произошла ошибка при выполнении действия", ephemeral=True
-            )
+        logger.debug(f"View error in {item.custom_id}: {error}")
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "❌ Произошла ошибка при выполнении действия", ephemeral=True
+                )
+        except Exception as e:
+            logger.debug(f"Error handling view error: {e}")
 
     def destroy(self) -> None:
         """Уничтожает view и отключает все кнопки."""
@@ -223,17 +226,23 @@ class MusicPlayerView(BaseEmojiView):
 
     async def refresh_select_menu(self) -> None:
         """Обновляет меню выбора треков."""
-        for item in self.children:
-            if isinstance(item, TrackSelect):
-                await item.refresh()
-                break
+        try:
+            for item in self.children:
+                if isinstance(item, TrackSelect):
+                    await item.update()
+                    break
+        except Exception as e:
+            logger.debug(f"Error refreshing select menu: {e}")
 
     async def update_track_select(self) -> None:
         """Обновляет меню выбора треков с новыми данными."""
-        for item in self.children:
-            if isinstance(item, TrackSelect):
-                await item.update()
-                break
+        try:
+            for item in self.children:
+                if isinstance(item, TrackSelect):
+                    await item.update()
+                    break
+        except Exception as e:
+            logger.debug(f"Error updating track select: {e}")
 
     async def _safe_defer_or_respond(
         self,
@@ -249,19 +258,20 @@ class MusicPlayerView(BaseEmojiView):
         except discord.InteractionResponded:
             pass
         except Exception as e:
-            logger.error(f"Error in interaction response: {e}")
+            logger.debug(f"Error in interaction response: {e}")
 
     async def shuffle_button_callback(self, interaction: discord.Interaction) -> None:
-        # Проверяем владельца плеера
-        if not await check_player_ownership(interaction, self.player):
-            return
-
-        if len(self.player.playlist) < 2:
-            await self._safe_defer_or_respond(
-                interaction, "❌ Недостаточно треков для перемешивания"
-            )
-            return
         try:
+            # Проверяем владельца плеера
+            if not await check_player_ownership(interaction, self.player):
+                return
+
+            if len(self.player.playlist) < 2:
+                await self._safe_defer_or_respond(
+                    interaction, "❌ Недостаточно треков для перемешивания"
+                )
+                return
+
             import random
 
             # Перемешиваем плейлист, исключая текущий трек
@@ -277,19 +287,19 @@ class MusicPlayerView(BaseEmojiView):
             await self._safe_defer_or_respond(
                 interaction, "🔀 Все треки были успешно перемешаны"
             )
-            await self.refresh_select_menu()
+            await self.update_track_select()
         except Exception as e:
-            logger.error(f"Shuffle error: {e}")
+            logger.debug(f"Shuffle error: {e}")
             await self._safe_defer_or_respond(
                 interaction, "⚠️ Ошибка при перемешивании очереди"
             )
 
     async def previous_button_callback(self, interaction: discord.Interaction) -> None:
-        # Проверяем владельца плеера
-        if not await check_player_ownership(interaction, self.player):
-            return
-
         try:
+            # Проверяем владельца плеера
+            if not await check_player_ownership(interaction, self.player):
+                return
+
             if getattr(self.player, "_handling_track_end", False):
                 await self._safe_defer_or_respond(
                     interaction, "⏳ Подождите завершения текущего трека..."
@@ -314,17 +324,17 @@ class MusicPlayerView(BaseEmojiView):
             await self.update_track_select()
 
         except Exception as e:
-            logger.error(f"Previous track error: {e}")
+            logger.debug(f"Previous track error: {e}")
             await self._safe_defer_or_respond(
                 interaction, "⚠️ Ошибка при переходе к предыдущему треку"
             )
 
     async def skip_button_callback(self, interaction: discord.Interaction) -> None:
-        # Проверяем владельца плеера
-        if not await check_player_ownership(interaction, self.player):
-            return
-
         try:
+            # Проверяем владельца плеера
+            if not await check_player_ownership(interaction, self.player):
+                return
+
             if getattr(self.player, "_handling_track_end", False):
                 await self._safe_defer_or_respond(
                     interaction, "⏳ Подождите завершения текущего трека..."
@@ -342,17 +352,17 @@ class MusicPlayerView(BaseEmojiView):
             await self.update_track_select()
 
         except Exception as e:
-            logger.error(f"Skip error: {e}")
+            logger.debug(f"Skip error: {e}")
             await self._safe_defer_or_respond(
                 interaction, "⚠️ Ошибка при пропуске трека"
             )
 
     async def loop_button_callback(self, interaction: discord.Interaction) -> None:
-        # Проверяем владельца плеера
-        if not await check_player_ownership(interaction, self.player):
-            return
-
         try:
+            # Проверяем владельца плеера
+            if not await check_player_ownership(interaction, self.player):
+                return
+
             # Переключаем режим цикла
             if self.player.state.loop_mode == LoopMode.NONE:
                 self.player.state.loop_mode = LoopMode.TRACK
@@ -366,7 +376,7 @@ class MusicPlayerView(BaseEmojiView):
 
             await self._safe_defer_or_respond(interaction, message)
         except Exception as e:
-            logger.error(f"Loop toggle error: {e}")
+            logger.debug(f"Loop toggle error: {e}")
             await self._safe_defer_or_respond(
                 interaction, "⚠️ Ошибка при переключении повтора"
             )
@@ -387,20 +397,33 @@ class MusicPlayerView(BaseEmojiView):
             duration = getattr(self.player.current, "length", 0)
             dur_formatted = format_duration(duration)
 
-            def create_embed(pos):
+            def create_embed(pos, parent_view):
                 pos_formatted = format_duration(pos)
+                # Получаем цвет из настроек
+                color = 0x242429  # дефолтный цвет
+                if (
+                    hasattr(parent_view.emoji_settings, "color")
+                    and parent_view.emoji_settings.color
+                ):
+                    try:
+                        if not isinstance(parent_view.emoji_settings.color, str):
+                            color = parent_view.emoji_settings.color
+                    except Exception:
+                        color = 0x242429
+
                 return discord.Embed(
                     title="Управление позицией",
                     description=f"**Текущая позиция:**\n{pos_formatted}\n**Длительность трека:**\n{dur_formatted}",
-                    color=0x242429,
+                    color=color,
                 )
 
             # Создаем view с подкнопками
             class SeekView(ui.View):
-                def __init__(self, player, original_interaction):
+                def __init__(self, player, original_interaction, parent_view):
                     super().__init__(timeout=60)
                     self.player = player
                     self.original_interaction = original_interaction
+                    self.parent_view = parent_view
                     self.seek_message = None  # Сохраняем ссылку на локальное сообщение
 
                 async def update_embed(self):
@@ -410,12 +433,14 @@ class MusicPlayerView(BaseEmojiView):
 
                     try:
                         current_pos = getattr(self.player, "position", 0)
-                        updated_embed = create_embed(current_pos)
+                        updated_embed = create_embed(current_pos, self.parent_view)
                         await self.seek_message.edit(embed=updated_embed, view=self)
                     except Exception as e:
                         logger.error(f"Error updating seek embed: {e}")
 
-                @ui.button(label="Назад на 10с", style=discord.ButtonStyle.secondary)
+                @ui.button(
+                    label="Назад на 10с", style=discord.ButtonStyle.secondary, row=0
+                )
                 async def rewind_10(
                     self, interaction: discord.Interaction, button: ui.Button
                 ):
@@ -436,7 +461,9 @@ class MusicPlayerView(BaseEmojiView):
                             "⚠️ Ошибка при перемотке", ephemeral=True
                         )
 
-                @ui.button(label="Вперед на 10с", style=discord.ButtonStyle.secondary)
+                @ui.button(
+                    label="Вперед на 10с", style=discord.ButtonStyle.secondary, row=0
+                )
                 async def forward_10(
                     self, interaction: discord.Interaction, button: ui.Button
                 ):
@@ -459,7 +486,9 @@ class MusicPlayerView(BaseEmojiView):
                         )
 
                 @ui.button(
-                    label="Вернуться в начало трэка", style=discord.ButtonStyle.danger
+                    label="Вернуться в начало трэка",
+                    style=discord.ButtonStyle.secondary,
+                    row=1,
                 )
                 async def restart(
                     self, interaction: discord.Interaction, button: ui.Button
@@ -479,8 +508,25 @@ class MusicPlayerView(BaseEmojiView):
                             "⚠️ Ошибка при перезапуске", ephemeral=True
                         )
 
-            embed = create_embed(position)
-            view = SeekView(self.player, interaction)
+            embed = create_embed(position, self)
+            view = SeekView(self.player, interaction, self)
+
+            # Устанавливаем кастомные эмодзи для кнопок
+            for item in view.children:
+                if isinstance(item, discord.ui.Button):
+                    if item.label == "Назад на 10с":
+                        emoji = self.get_emoji("NK_BACK")
+                        if emoji and emoji != "❓":
+                            item.emoji = emoji
+                    elif item.label == "Вперед на 10с":
+                        emoji = self.get_emoji("NK_NEXT")
+                        if emoji and emoji != "❓":
+                            item.emoji = emoji
+                    elif item.label == "Вернуться в начало трэка":
+                        emoji = self.get_emoji("NK_REVIVE")
+                        if emoji and emoji != "❓":
+                            item.emoji = emoji
+
             await self._safe_defer_or_respond(interaction)
             # Сохраняем ссылку на локальное сообщение
             view.seek_message = await interaction.followup.send(
@@ -504,11 +550,11 @@ class MusicPlayerView(BaseEmojiView):
         return f"`{bar}`"
 
     async def volume_button_callback(self, interaction: discord.Interaction) -> None:
-        # Проверяем владельца плеера
-        if not await check_player_ownership(interaction, self.player):
-            return
-
         try:
+            # Проверяем владельца плеера
+            if not await check_player_ownership(interaction, self.player):
+                return
+
             # Загружаем текущую громкость из БД
             if self.player.text_channel and self.player.text_channel.guild:
                 guild_id = self.player.text_channel.guild.id
@@ -538,14 +584,28 @@ class MusicPlayerView(BaseEmojiView):
                         return
 
                     try:
+                        # Получаем цвет из настроек
+                        color = 0x242429  # дефолтный цвет
+                        if (
+                            hasattr(self.parent_view.emoji_settings, "color")
+                            and self.parent_view.emoji_settings.color
+                        ):
+                            try:
+                                if not isinstance(
+                                    self.parent_view.emoji_settings.color, str
+                                ):
+                                    color = self.parent_view.emoji_settings.color
+                            except Exception:
+                                color = 0x242429
+
                         embed = discord.Embed(
                             title="🔊 Управление громкостью",
                             description=f"**Текущая громкость:** {new_volume}%",
-                            color=0x242429,
+                            color=color,
                         )
                         await self.volume_message.edit(embed=embed, view=self)
                     except Exception as e:
-                        logger.error(f"Error updating volume embed: {e}")
+                        logger.debug(f"Error updating volume embed: {e}")
 
                 @ui.button(
                     label="-10%", style=discord.ButtonStyle.secondary, emoji="🔉"
@@ -553,16 +613,16 @@ class MusicPlayerView(BaseEmojiView):
                 async def decrease_volume(
                     self, interaction: discord.Interaction, button: ui.Button
                 ):
-                    if not await check_player_ownership(interaction, self.player):
-                        return
                     try:
+                        if not await check_player_ownership(interaction, self.player):
+                            return
                         current_volume = getattr(self.player, "volume", 100)
                         new_volume = max(0, current_volume - 10)
                         self.player.volume = new_volume
                         await interaction.response.defer()
                         await self.update_volume_embed(new_volume)
                     except Exception as e:
-                        logger.error(f"Volume decrease error: {e}")
+                        logger.debug(f"Volume decrease error: {e}")
                         await interaction.response.send_message(
                             "⚠️ Ошибка при изменении громкости", ephemeral=True
                         )
@@ -573,29 +633,29 @@ class MusicPlayerView(BaseEmojiView):
                 async def increase_volume(
                     self, interaction: discord.Interaction, button: ui.Button
                 ):
-                    if not await check_player_ownership(interaction, self.player):
-                        return
                     try:
+                        if not await check_player_ownership(interaction, self.player):
+                            return
                         current_volume = getattr(self.player, "volume", 100)
                         new_volume = min(200, current_volume + 10)
                         self.player.volume = new_volume
                         await interaction.response.defer()
                         await self.update_volume_embed(new_volume)
                     except Exception as e:
-                        logger.error(f"Volume increase error: {e}")
+                        logger.debug(f"Volume increase error: {e}")
                         await interaction.response.send_message(
                             "⚠️ Ошибка при изменении громкости", ephemeral=True
                         )
 
                 @ui.button(
-                    label="Установить", style=discord.ButtonStyle.primary, emoji="⚙️"
+                    label="Установить", style=discord.ButtonStyle.secondary, emoji="⚙️"
                 )
                 async def set_volume(
                     self, interaction: discord.Interaction, button: ui.Button
                 ):
-                    if not await check_player_ownership(interaction, self.player):
-                        return
                     try:
+                        if not await check_player_ownership(interaction, self.player):
+                            return
 
                         class VolumeModal(ui.Modal, title="Установить громкость"):
                             def __init__(self, player, volume_view):
@@ -637,12 +697,30 @@ class MusicPlayerView(BaseEmojiView):
                             VolumeModal(self.player, self)
                         )
                     except Exception as e:
-                        logger.error(f"Volume modal error: {e}")
+                        logger.debug(f"Volume modal error: {e}")
                         await interaction.response.send_message(
                             "⚠️ Ошибка при установке громкости", ephemeral=True
                         )
 
+            # Применяем кастомные эмодзи к кнопкам
             view = VolumeView(self.player, self)
+
+            # Устанавливаем кастомные эмодзи для кнопок
+            for item in view.children:
+                if isinstance(item, discord.ui.Button):
+                    if item.label == "-10%":
+                        emoji = self.get_emoji("NK_VOLUM_M")
+                        if emoji and emoji != "❓":
+                            item.emoji = emoji
+                    elif item.label == "+10%":
+                        emoji = self.get_emoji("NK_VOLUM_P")
+                        if emoji and emoji != "❓":
+                            item.emoji = emoji
+                    elif item.label == "Установить":
+                        emoji = self.get_emoji("NK_VOLUME")
+                        if emoji and emoji != "❓":
+                            item.emoji = emoji
+
             await self._safe_defer_or_respond(interaction)
             # Сохраняем ссылку на локальное сообщение
             view.volume_message = await interaction.followup.send(
@@ -650,36 +728,34 @@ class MusicPlayerView(BaseEmojiView):
             )
 
         except Exception as e:
-            logger.error(f"Volume info error: {e}")
+            logger.debug(f"Volume info error: {e}")
             await self._safe_defer_or_respond(
                 interaction, "⚠️ Ошибка при получении информации о громкости"
             )
 
     async def stop_button_callback(self, interaction: discord.Interaction) -> None:
-        # Проверяем владельца плеера
-        if not await check_player_ownership(interaction, self.player):
-            return
-
         try:
-            await self.player.disconnect()
-            embed = discord.Embed(
-                title="⏹️ Воспроизведение остановлено",
-                description="Плеер отключен от голосового канала",
-                color=0x242429,
+            # Проверяем владельца плеера
+            if not await check_player_ownership(interaction, self.player):
+                return
+
+            await self._safe_defer_or_respond(interaction)
+            await self.player.cleanup_disconnect()
+            await interaction.followup.send(
+                "⏹️ Воспроизведение остановлено", ephemeral=True
             )
-            await interaction.response.edit_message(embed=embed, view=None)
-            self.destroy()
         except Exception as e:
-            logger.error(f"Stop error: {e}")
+            logger.debug(f"Stop error: {e}")
             await self._safe_defer_or_respond(
                 interaction, "⚠️ Ошибка при остановке воспроизведения"
             )
 
     async def text_button_callback(self, interaction: discord.Interaction) -> None:
-        # Проверяем владельца плеера
-        if not await check_player_ownership(interaction, self.player):
-            return
         try:
+            # Проверяем владельца плеера
+            if not await check_player_ownership(interaction, self.player):
+                return
+
             if not self.player.current:
                 await self._safe_defer_or_respond(
                     interaction, "❌ Нет воспроизводимого трека"
@@ -770,17 +846,17 @@ class MusicPlayerView(BaseEmojiView):
             view = LyricsPaginator()
             await view.send(interaction)
         except Exception as e:
-            logger.error(f"Lyrics error: {e}")
+            logger.debug(f"Lyrics error: {e}")
             await self._safe_defer_or_respond(
                 interaction, "⚠️ Ошибка при получении текста песни"
             )
 
     async def like_button_callback(self, interaction: discord.Interaction) -> None:
-        # Проверяем владельца плеера
-        if not await check_player_ownership(interaction, self.player):
-            return
-
         try:
+            # Проверяем владельца плеера
+            if not await check_player_ownership(interaction, self.player):
+                return
+
             if not self.player.current:
                 await self._safe_defer_or_respond(
                     interaction, "❌ Нет трека для добавления в избранное"
@@ -804,18 +880,18 @@ class MusicPlayerView(BaseEmojiView):
             await self._safe_defer_or_respond(interaction)
             await interaction.followup.send(embed=embed, ephemeral=True)
         except Exception as e:
-            logger.error(f"Like button error: {e}")
+            logger.debug(f"Like button error: {e}")
             await self._safe_defer_or_respond(
                 interaction, "⚠️ Ошибка при добавлении трека в плейлист"
             )
 
     async def pause_button_callback(self, interaction: discord.Interaction) -> None:
         """Callback для кнопки pause"""
-        # Проверяем владельца плеера
-        if not await check_player_ownership(interaction, self.player):
-            return
-
         try:
+            # Проверяем владельца плеера
+            if not await check_player_ownership(interaction, self.player):
+                return
+
             # Use player.now_playing_message if self.message is None
             if not self.message and self.player.now_playing_message:
                 self.message = self.player.now_playing_message
@@ -824,7 +900,7 @@ class MusicPlayerView(BaseEmojiView):
                 )
 
             if not self.message:
-                logger.warning(
+                logger.debug(
                     "self.message is None during pause_button, attempting to create new message"
                 )
                 if self.player.current and self.player.text_channel:
@@ -889,13 +965,18 @@ class MusicPlayerView(BaseEmojiView):
                     color=color,
                     custom_emojis=self.emoji_settings.custom_emojis,
                 )
-
                 await self.message.edit(embed=embed, view=self)
-            await self._safe_defer_or_respond(interaction)
-        except Exception as e:
-            logger.error(f"Pause/resume error: {e}")
+
             await self._safe_defer_or_respond(
-                interaction, "⚠️ Ошибка при изменении воспроизведения"
+                interaction,
+                "⏸️ Воспроизведение приостановлено"
+                if not is_paused
+                else "▶️ Воспроизведение возобновлено",
+            )
+        except Exception as e:
+            logger.debug(f"Pause button error: {e}")
+            await self._safe_defer_or_respond(
+                interaction, "⚠️ Ошибка при управлении воспроизведением"
             )
 
 

@@ -70,6 +70,63 @@ class TrackSelect(Select):
             custom_id="track_select",
         )
 
+    async def update(self, interaction: Interaction = None):
+        """Обновляет опции селекта на основе текущей истории"""
+        try:
+            # Получаем обновленную историю
+            history = getattr(self.player, "history", [])
+            seen = set()
+            unique_history = []
+
+            for track in reversed(history[-25:]):
+                track_uri = getattr(track, "uri", getattr(track, "identifier", ""))
+                if track_uri and track_uri not in seen:
+                    seen.add(track_uri)
+                    unique_history.append(track)
+
+            self.tracks = unique_history
+
+            # Обновляем опции
+            options = []
+            if self.tracks:
+                for i, track in enumerate(self.tracks):
+                    author = getattr(track, "author", "Unknown Artist")
+                    title = getattr(track, "title", "Unknown Track")
+                    label = f"{author} - {title}"
+
+                    if len(label) > 100:
+                        label = label[:97] + "..."
+
+                    duration = getattr(track, "length", 0)
+                    duration_str = (
+                        format_duration(duration) if duration > 0 else "Unknown"
+                    )
+
+                    options.append(
+                        SelectOption(
+                            label=label,
+                            value=str(i),
+                            description=f"Длительность: {duration_str}",
+                        )
+                    )
+            else:
+                options = [
+                    SelectOption(
+                        label="История пуста",
+                        value="none",
+                        description="Нет прослушанных треков",
+                    )
+                ]
+
+            self.options = options
+            self.disabled = not bool(self.tracks)
+
+            # Обновляем сообщение если передан interaction
+            if interaction and not interaction.response.is_done():
+                await interaction.response.edit_message(view=self.view)
+        except Exception as e:
+            logger.debug(f"Error updating TrackSelect: {e}")
+
     async def callback(self, interaction: Interaction):
         # Проверяем владельца плеера
         if not await check_player_ownership(interaction, self.player):
@@ -114,9 +171,7 @@ class TrackSelect(Select):
                         "✅ Отправлен новый embed завершенного трека (track_select)"
                     )
             except discord.HTTPException as e:
-                logger.warning(
-                    f"Failed to edit/send finished embed (track_select): {e}"
-                )
+                logger.debug(f"Failed to edit/send finished embed (track_select): {e}")
 
         self.player.now_playing_message = None
 

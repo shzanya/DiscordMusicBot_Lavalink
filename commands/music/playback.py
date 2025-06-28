@@ -461,7 +461,18 @@ class HarmonyPlayer(wavelink.Player):
                 for item in view.children:
                     item.disabled = True
                 if edit and interaction.message:
-                    await interaction.message.edit(embed=embed, view=view)
+                    try:
+                        await interaction.message.edit(embed=embed, view=view)
+                    except discord.NotFound:
+                        # Сообщение было удалено, отправляем новое
+                        if not interaction.response.is_done():
+                            await interaction.response.send_message(
+                                embed=embed, view=view, ephemeral=True
+                            )
+                        else:
+                            await interaction.followup.send(
+                                embed=embed, view=view, ephemeral=True
+                            )
                 else:
                     if not interaction.response.is_done():
                         await interaction.response.send_message(
@@ -497,7 +508,18 @@ class HarmonyPlayer(wavelink.Player):
             view.total_pages = total_pages
             view.update_page_buttons()
             if edit and interaction.message:
-                await interaction.message.edit(embed=embed, view=view)
+                try:
+                    await interaction.message.edit(embed=embed, view=view)
+                except discord.NotFound:
+                    # Сообщение было удалено, отправляем новое
+                    if not interaction.response.is_done():
+                        await interaction.response.send_message(
+                            embed=embed, view=view, ephemeral=True
+                        )
+                    else:
+                        await interaction.followup.send(
+                            embed=embed, view=view, ephemeral=True
+                        )
             else:
                 if not interaction.response.is_done():
                     await interaction.response.send_message(
@@ -508,7 +530,7 @@ class HarmonyPlayer(wavelink.Player):
                         embed=embed, view=view, ephemeral=True
                     )
         except Exception as e:
-            logger.error(f"Error in show_queue: {e}")
+            logger.debug(f"Error in show_queue: {e}")
 
     async def skip(self) -> None:
         if getattr(self, "_handling_track_end", False):
