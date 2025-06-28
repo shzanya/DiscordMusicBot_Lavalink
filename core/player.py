@@ -13,6 +13,7 @@ class LoopMode(Enum):
     TRACK = 1
     QUEUE = 2
 
+
 @dataclass
 class PlayerState:
     loop_mode: LoopMode = LoopMode.NONE
@@ -26,6 +27,7 @@ class PlayerState:
     vibrato: bool = False
     distortion: bool = False
     volume_before_effects: int = 100
+
 
 class HarmonyPlayer(wavelink.Player):
     def __init__(self, bot, *args, **kwargs):
@@ -61,6 +63,7 @@ class HarmonyPlayer(wavelink.Player):
             if guild_id:
                 try:
                     from services import mongo_service
+
                     settings = await mongo_service.get_guild_settings(guild_id)
                     color = settings.get("color", "default")
                     custom_emojis = settings.get("custom_emojis", None)
@@ -72,8 +75,7 @@ class HarmonyPlayer(wavelink.Player):
                 custom_emojis = None
 
             embed = create_now_playing_embed(
-                track, self, 
-                color=color, custom_emojis=custom_emojis
+                track, self, color=color, custom_emojis=custom_emojis
             )
             view = await MusicPlayerView.create(
                 self, color=color, custom_emojis=custom_emojis
@@ -109,11 +111,13 @@ class HarmonyPlayer(wavelink.Player):
 
     async def _get_autoplay_track(self) -> Optional[wavelink.Playable]:
         if not self.guild or not self.current:
-            self.logger.debug("[DEBUG] _get_autoplay_track пропущен — нет текущего трека или сервера")
+            self.logger.debug(
+                "[DEBUG] _get_autoplay_track пропущен — нет текущего трека или сервера"
+            )
             return None
 
         try:
-            if hasattr(self.current, 'recommended'):
+            if hasattr(self.current, "recommended"):
                 return await self.current.recommended()
 
             search_query = f"{self.current.author} similar songs"
@@ -129,10 +133,16 @@ class HarmonyPlayer(wavelink.Player):
 
         return None
 
-    async def set_effects(self, bass: bool = None, nightcore: bool = None, vaporwave: bool = None):
+    async def set_effects(
+        self, bass: bool = None, nightcore: bool = None, vaporwave: bool = None
+    ):
         self.state.bass_boost = bass if bass is not None else self.state.bass_boost
-        self.state.nightcore = nightcore if nightcore is not None else self.state.nightcore
-        self.state.vaporwave = vaporwave if vaporwave is not None else self.state.vaporwave
+        self.state.nightcore = (
+            nightcore if nightcore is not None else self.state.nightcore
+        )
+        self.state.vaporwave = (
+            vaporwave if vaporwave is not None else self.state.vaporwave
+        )
 
         # Инициализация всех 15 полос
         levels = [0.0] * 15

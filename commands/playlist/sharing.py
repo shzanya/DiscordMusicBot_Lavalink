@@ -5,6 +5,7 @@ from config.settings import Settings  # Добавлено предположе�
 from services.database import DatabaseService
 from ui.embeds import create_error_embed
 
+
 class PlaylistSharingCommands(commands.Cog, name="🔗 Поделиться"):
     """🔗 Команды для шаринга плейлистов"""
 
@@ -12,14 +13,14 @@ class PlaylistSharingCommands(commands.Cog, name="🔗 Поделиться"):
         self.bot = bot
         self.db: DatabaseService = bot.db
 
-    @commands.command(name='shareplaylist', aliases=['plshare'])
+    @commands.command(name="shareplaylist", aliases=["plshare"])
     async def share_playlist_command(self, ctx, playlist_name: str):
         """🔗 Поделиться плейлистом"""
         playlist = await self.db.get_playlist(ctx.author.id, playlist_name)
         if not playlist:
-            return await ctx.reply(embed=create_error_embed(
-                f"Плейлист `{playlist_name}` не найден!"
-            ))
+            return await ctx.reply(
+                embed=create_error_embed(f"Плейлист `{playlist_name}` не найден!")
+            )
 
         share_id = await self.db.create_share_link(playlist.id)
 
@@ -29,8 +30,10 @@ class PlaylistSharingCommands(commands.Cog, name="🔗 Поделиться"):
                 f"Поделитесь плейлистом **{playlist.name}** с помощью команды:\n"
                 f"```{Settings.COMMAND_PREFIX}importpl {share_id}```"
             ),
-            color=Colors.DEFAULT  # или Colors.EMBED, если у вас такой цвет определён
+            color=Colors.DEFAULT,  # или Colors.EMBED, если у вас такой цвет определён
         )
         await ctx.send(embed=embed)
+
+
 async def setup(bot):
     await bot.add_cog(PlaylistSharingCommands(bot))

@@ -1,6 +1,7 @@
 from emojis import Emojis as CustomEmojis
 import re
 
+
 class Emojis:
     _color_suffixes = {
         "default": "",
@@ -28,7 +29,7 @@ class Emojis:
         "gold": "gold",
         "coral": "coral",
         "salmon": "salmon",
-        "crimson": "crimson"
+        "crimson": "crimson",
     }
 
     @staticmethod
@@ -36,7 +37,9 @@ class Emojis:
         return "❌"
 
 
-def get_emoji(base_name: str, color: str = "default", custom_emojis: dict = None) -> str:
+def get_emoji(
+    base_name: str, color: str = "default", custom_emojis: dict = None
+) -> str:
     suffix = Emojis._color_suffixes.get(color, "")
     attr_name = f"{base_name}_{suffix.upper()}" if suffix else base_name
     if custom_emojis and base_name in custom_emojis:
@@ -59,13 +62,12 @@ class Colors:
     PREMIUM = 0x242429
     SPOTIFY = 0x242429
 
+
 emojis = Emojis
 
 
 def get_button_emoji(
-    base_name: str,
-    color: str = "default",
-    custom_emojis: dict = None
+    base_name: str, color: str = "default", custom_emojis: dict = None
 ):
     """
     Возвращает PartialEmoji для кастомных emoji Discord или unicode-символ для обычных.
@@ -73,16 +75,11 @@ def get_button_emoji(
     """
     emoji_str = get_emoji(base_name, color, custom_emojis)
     # Если это кастомный emoji вида <a:name:id> или <:name:id>
-    match = re.match(
-        r'<a?:(\w+):(\d+)>',
-        emoji_str
-    )
+    match = re.match(r"<a?:(\w+):(\d+)>", emoji_str)
     if match:
         import discord
+
         name, id_ = match.group(1), int(match.group(2))
-        return discord.PartialEmoji(
-            name=name,
-            id=id_
-        )
+        return discord.PartialEmoji(name=name, id=id_)
     # Если это unicode
     return emoji_str

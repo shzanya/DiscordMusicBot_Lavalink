@@ -12,11 +12,11 @@ class AutoEmojiManager:
         self.bot = bot
         self.logger = logging.getLogger("AutoEmojiManager")
         self.emoji_folder = Path("assets/Emoji")
-        self.supported_formats = {'.png', '.jpg', '.jpeg', '.gif'}
+        self.supported_formats = {".png", ".jpg", ".jpeg", ".gif"}
         self.emojis: Dict[str, discord.Emoji] = {}
 
     def _get_file_hash(self, file_path: Path) -> str:
-        with open(file_path, 'rb') as f:
+        with open(file_path, "rb") as f:
             return hashlib.md5(f.read()).hexdigest()
 
     async def _get_emoji_hash(self, emoji: discord.Emoji) -> str:
@@ -64,17 +64,19 @@ class AutoEmojiManager:
 
             if existing:
                 existing_hash = await self._get_emoji_hash(existing)
-                changed = (existing_hash != file_hash)
+                changed = existing_hash != file_hash
 
             if not existing or changed:
                 try:
-                    with open(file_path, 'rb') as f:
+                    with open(file_path, "rb") as f:
                         image_data = f.read()
 
                     if existing:
                         await existing.delete()
 
-                    new_emoji = await self.bot.create_application_emoji(name=name, image=image_data)
+                    new_emoji = await self.bot.create_application_emoji(
+                        name=name, image=image_data
+                    )
                     self.emojis[name] = new_emoji
 
                     if existing:
@@ -102,15 +104,15 @@ class AutoEmojiManager:
             "# Не редактируй вручную!",
             "",
             "class Emojis:",
-            "    \"\"\"🚀 Класс со всеми application эмодзи\"\"\"",
-            ""
+            '    """🚀 Класс со всеми application эмодзи"""',
+            "",
         ]
 
         try:
             app_emojis = await self.bot.fetch_application_emojis()
             for emoji in app_emojis:
-                safe_name = emoji.name.replace('-', '_').replace(' ', '_')
-                lines.append(f"    {safe_name.upper()} = \"{emoji}\"")
+                safe_name = emoji.name.replace("-", "_").replace(" ", "_")
+                lines.append(f'    {safe_name.upper()} = "{emoji}"')
         except Exception as e:
             self.logger.error(f"❌ Ошибка генерации emoji-файла: {e}")
 
@@ -119,8 +121,8 @@ class AutoEmojiManager:
             "    @classmethod",
             "    def get_all(cls):",
             "        return {k: v for k, v in cls.__dict__.items() if not k.startswith('_') and k != 'get_all'}",
-            ""
+            "",
         ]
 
-        emoji_file.write_text('\n'.join(lines), encoding='utf-8')
+        emoji_file.write_text("\n".join(lines), encoding="utf-8")
         self.logger.info(f"📄 Файл {emoji_file} обновлён")

@@ -14,68 +14,68 @@ from ui.views import MusicPlayerView
 
 class NowPlayingUpdater:
     """Fixed updater class with proper error handling"""
-    
+
     def __init__(self):
         self.active_messages: Dict[int, dict] = {}
         self.update_task = None
-        
+
     def start_updater(self):
         """Start background update task"""
         if self.update_task is None or self.update_task.done():
             self.update_task = asyncio.create_task(self._update_loop())
-    
+
     def stop_updater(self):
         """Stop background update task"""
         if self.update_task and not self.update_task.done():
             self.update_task.cancel()
-    
+
     async def register_message(
-        self, 
-        guild_id: int, 
-        message: discord.Message, 
-        player: HarmonyPlayer, 
-        track: wavelink.Playable, 
+        self,
+        guild_id: int,
+        message: discord.Message,
+        player: HarmonyPlayer,
+        track: wavelink.Playable,
         requester: discord.Member,
         color: str = "default",
-        custom_emojis: dict = None
+        custom_emojis: dict = None,
     ):
         """Регистрация сообщения для автообновления"""
         if not message or not player:
             return
         self.active_messages[guild_id] = {
-            'message': message,
-            'player': player,
-            'track': track,
-            'requester': requester,
-            'last_update': 0,
-            'color': color,
-            'custom_emojis': custom_emojis
+            "message": message,
+            "player": player,
+            "track": track,
+            "requester": requester,
+            "last_update": 0,
+            "color": color,
+            "custom_emojis": custom_emojis,
         }
         self.start_updater()
-    
+
     def unregister_message(self, guild_id: int):
         """Remove message from auto-updating"""
         if guild_id in self.active_messages:
             del self.active_messages[guild_id]
-        
+
         if not self.active_messages:
             self.stop_updater()
-    
+
     async def _update_loop(self):
         """Main update loop with comprehensive error handling"""
         try:
             while self.active_messages:
                 items = list(self.active_messages.items())
-                
+
                 for guild_id, info in items:
                     try:
                         await self._update_message(guild_id, info)
                     except Exception as e:
                         print(f"[DEBUG] Update error for guild {guild_id}: {e}")
                         self.unregister_message(guild_id)
-                
+
                 await asyncio.sleep(3)
-                
+
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -84,21 +84,26 @@ class NowPlayingUpdater:
     async def _update_message(self, guild_id: int, info: dict):
         """Update single message with safety checks"""
         try:
-            message = info.get('message')
-            player = info.get('player')
+            message = info.get("message")
+            player = info.get("player")
 
             if not message or not player:
                 self.unregister_message(guild_id)
                 return
 
             # Check if player is valid and playing
-            if not hasattr(player, 'playing') or not player.playing or not hasattr(player, 'current') or not player.current:
+            if (
+                not hasattr(player, "playing")
+                or not player.playing
+                or not hasattr(player, "current")
+                or not player.current
+            ):
                 self.unregister_message(guild_id)
                 return
 
             # Get position safely
             try:
-                current_position = int(getattr(player, 'position', 0) or 0)
+                current_position = int(getattr(player, "position", 0) or 0)
             except Exception:
                 current_position = 0
 
@@ -106,27 +111,30 @@ class NowPlayingUpdater:
 
             # Force update if track changed
             force_update = False
-            if info.get('track') != current_track:
-                info['track'] = current_track
+            if info.get("track") != current_track:
+                info["track"] = current_track
                 force_update = True
 
             # Update timing check
-            last_update = info.get('last_update', 0)
+            last_update = info.get("last_update", 0)
             if not force_update and abs(current_position - last_update) < 1:
                 return
 
-            info['last_update'] = current_position
+            info["last_update"] = current_position
 
             # Create and send updated embed
-            requester = info.get('requester')
-            color = info.get('color', 'default')
-            custom_emojis = info.get('custom_emojis', None)
+            requester = info.get("requester")
+            color = info.get("color", "default")
+            custom_emojis = info.get("custom_emojis", None)
             embed = create_now_playing_embed(
-                current_track, player, requester,
-                color=color, custom_emojis=custom_emojis
+                current_track,
+                player,
+                requester,
+                color=color,
+                custom_emojis=custom_emojis,
             )
             await message.edit(embed=embed)
-            
+
         except discord.NotFound:
             self.unregister_message(guild_id)
         except discord.Forbidden:
@@ -135,6 +143,7 @@ class NowPlayingUpdater:
             print(f"[DEBUG] HTTP error for guild {guild_id}: {e}")
         except Exception as e:
             print(f"[DEBUG] Update error for guild {guild_id}: {e}")
+
 
 # Глобальный экземпляр
 now_playing_updater = NowPlayingUpdater()
@@ -146,12 +155,10 @@ def create_queue_embed(
     queue: list,
     page: int,
     total_pages: int,
-    user: discord.User
+    user: discord.User,
 ) -> discord.Embed:
     embed = discord.Embed(
-        title=f"—・Очередь сервера {guild.name}",
-        description="",
-        color=Colors.MUSIC
+        title=f"—・Очередь сервера {guild.name}", description="", color=Colors.MUSIC
     )
 
     # Сейчас играет
@@ -188,18 +195,22 @@ def create_queue_embed(
     return embed
 
 
-
-async def send_now_playing_message(channel, track: wavelink.Playable, player: HarmonyPlayer, requester: discord.Member, color: str = "default", custom_emojis: dict = None) -> discord.Message:
+async def send_now_playing_message(
+    channel,
+    track: wavelink.Playable,
+    player: HarmonyPlayer,
+    requester: discord.Member,
+    color: str = "default",
+    custom_emojis: dict = None,
+) -> discord.Message:
     """Отправка сообщения с автообновлением и кнопками управления"""
     embed = create_now_playing_embed(
-        track, player, requester,
-        color=color, custom_emojis=custom_emojis
+        track, player, requester, color=color, custom_emojis=custom_emojis
     )
 
     # Создаем view без message
     view = await MusicPlayerView.create(
-        player, None, requester,
-        color=color, custom_emojis=custom_emojis
+        player, None, requester, color=color, custom_emojis=custom_emojis
     )
 
     # Отправляем embed с view
@@ -218,85 +229,74 @@ async def send_now_playing_message(channel, track: wavelink.Playable, player: Ha
         track,
         requester,
         color=color,
-        custom_emojis=custom_emojis
+        custom_emojis=custom_emojis,
     )
 
     return message
 
 
-def create_track_embed_spotify_style(track: wavelink.Playable, player: HarmonyPlayer, requester: discord.Member) -> discord.Embed:
+def create_track_embed_spotify_style(
+    track: wavelink.Playable, player: HarmonyPlayer, requester: discord.Member
+) -> discord.Embed:
     """🎵 Создание embed в стиле Spotify"""
-   
-    artist = getattr(track, 'author', 'Неизвестный исполнитель')
-    title = getattr(track, 'title', 'Неизвестный трек')
-    uri = getattr(track, 'uri', '')
-   
+
+    artist = getattr(track, "author", "Неизвестный исполнитель")
+    title = getattr(track, "title", "Неизвестный трек")
+    uri = getattr(track, "uri", "")
+
     # Создаем ссылку на трек
     track_link = f"**[{title}]({uri})**" if uri else f"**{title}**"
-   
+
     # Прогресс-бар
     position = player.position
     duration = track.length
-    progress_bar = create_progress_bar(position, duration, 9)  # 9 сегментов как в примере
-   
+    progress_bar = create_progress_bar(
+        position, duration, 9
+    )  # 9 сегментов как в примере
+
     # Время
     current_time = format_duration(int(position))
     total_time = format_duration(int(duration)) if duration else "∞"
-   
+
     # Описание
     description = f"{track_link}\n\n"
     description += f"> Запрос от {requester.display_name}:\n"
     description += f"{progress_bar}\n\n"
     description += f"Играет — `[{current_time}/{total_time}]`"
-   
-    embed = discord.Embed(
-        title=artist,
-        description=description,
-        color=Colors.SPOTIFY
-    )
-   
-    # Обложка
-    if hasattr(track, 'artwork') and track.artwork:
-        embed.set_thumbnail(url=track.artwork)
-   
-    return embed
 
+    embed = discord.Embed(title=artist, description=description, color=Colors.SPOTIFY)
+
+    # Обложка
+    if hasattr(track, "artwork") and track.artwork:
+        embed.set_thumbnail(url=track.artwork)
+
+    return embed
 
 
 def create_error_embed(title: str, description: str) -> discord.Embed:
     """❌ Создание embed для ошибок"""
     return discord.Embed(
-        title=f"{emojis.ERROR()} {title}",
-        description=description,
-        color=Colors.ERROR
+        title=f"{emojis.ERROR()} {title}", description=description, color=Colors.ERROR
     )
 
 
 def create_success_embed(title: str, description: str) -> discord.Embed:
     """✅ Создание embed для успешных операций"""
     return discord.Embed(
-        title=f"✅ {title}",
-        description=description,
-        color=Colors.SUCCESS
+        title=f"✅ {title}", description=description, color=Colors.SUCCESS
     )
 
 
 def create_warning_embed(title: str, description: str) -> discord.Embed:
     """⚠️ Создание embed для предупреждений"""
     return discord.Embed(
-        title=f"⚠️ {title}",
-        description=description,
-        color=Colors.WARNING
+        title=f"⚠️ {title}", description=description, color=Colors.WARNING
     )
 
 
 def create_info_embed(title: str, description: str) -> discord.Embed:
     """ℹ️ Создание embed для информации"""
-    return discord.Embed(
-        title=f"ℹ️ {title}",
-        description=description,
-        color=Colors.INFO
-    )
+    return discord.Embed(title=f"ℹ️ {title}", description=description, color=Colors.INFO)
 
 
 # Очистка при завершении работы бота
