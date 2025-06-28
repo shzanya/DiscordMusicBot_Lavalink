@@ -18,13 +18,17 @@ class MongoService:
 
     # Пример: получить настройки сервера
     async def get_guild_settings(self, guild_id: int) -> Optional[Dict[str, Any]]:
-        return await self.guild_settings.find_one({"guild_id": guild_id})
+        # Убеждаемся что guild_id - строка
+        guild_id_str = str(guild_id)
+        return await self.guild_settings.find_one({"guild_id": guild_id_str})
 
     async def set_guild_settings(
         self, guild_id: int, settings: Dict[str, Any]
     ) -> None:
+        # Убеждаемся что guild_id - строка
+        guild_id_str = str(guild_id)
         await self.guild_settings.update_one(
-            {"guild_id": guild_id}, {"$set": settings}, upsert=True
+            {"guild_id": guild_id_str}, {"$set": settings}, upsert=True
         )
 
     # Пример: сохранить эффекты для сервера
@@ -93,6 +97,26 @@ class MongoService:
         await self.guild_settings.update_one(
             {"guild_id": guild_id},
             {"$set": {"dj_role_id": role_id}},
+            upsert=True
+        )
+
+    def get_collection(self, collection_name: str):
+        """Получить коллекцию по имени"""
+        return self.db[collection_name]
+
+    # Методы для работы с громкостью сервера
+    async def get_guild_volume(self, guild_id: int) -> int:
+        """Получить громкость сервера"""
+        guild_id_str = str(guild_id)
+        doc = await self.guild_settings.find_one({"guild_id": guild_id_str})
+        return doc.get("volume", 100) if doc else 100
+
+    async def set_guild_volume(self, guild_id: int, volume: int) -> None:
+        """Установить громкость сервера"""
+        guild_id_str = str(guild_id)
+        await self.guild_settings.update_one(
+            {"guild_id": guild_id_str}, 
+            {"$set": {"volume": volume}}, 
             upsert=True
         )
 

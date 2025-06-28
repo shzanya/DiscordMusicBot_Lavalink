@@ -5,7 +5,7 @@ import logging
 import os
 from pathlib import Path
 from config.settings import Settings
-from core.events import EventHandler
+from core.events import TrackStartEvent, TrackEndEvent
 from core.assets import AutoEmojiManager
 
 class HarmonyBot(commands.Bot):
@@ -59,7 +59,8 @@ class HarmonyBot(commands.Bot):
         await self._load_cogs_from_structure()
         
         # Инициализация обработчиков событий
-        await self.add_cog(EventHandler(self))
+        self.track_start_event = TrackStartEvent(self)
+        self.track_end_event = TrackEndEvent(self)
         
         self.logger.info("🎵 Harmony Bot инициализирован!")
 
@@ -215,32 +216,40 @@ class HarmonyBot(commands.Bot):
         self.loaded_cogs.clear()
 
     async def on_ready(self):
-        """🚀 Событие готовности бота"""
-        if self.ready:
-            return
-        self.ready = True
-        
-        # Синхронизация slash команд
-        if not self.synced:
-            try:
-                synced = await self.tree.sync()
-                self.logger.info(f"🔄 Синхронизировано {len(synced)} slash команд")
-                self.synced = True
-            except Exception as e:
-                self.logger.error(f"❌ Ошибка синхронизации команд: {e}")
-        
-        self.logger.info(f"🎵 {self.user} готов к работе!")
-        self.logger.info(f"📊 Подключен к {len(self.guilds)} серверам")
-        self.logger.info(f"👥 Обслуживает {len(self.users)} пользователей")
-        self.logger.info(f"⚙️ Загружено {len(self.loaded_cogs)} когов")
-        
-        await self.change_presence(
-            status=discord.Status.online,
-            activity=discord.Activity(
-                type=discord.ActivityType.listening,
-                name="R.Sound"
+        """🎉 Событие готовности бота"""
+        if not self.ready:
+            self.ready = True
+            self.logger.info(f"🎵 {self.user} готов к работе!")
+            self.logger.info(f"📊 Подключен к {len(self.guilds)} серверам")
+            
+            # Синхронизация команд
+            if not self.synced:
+                try:
+                    await self.tree.sync()
+                    self.synced = True
+                    self.logger.info("✅ Команды синхронизированы!")
+                except Exception as e:
+                    self.logger.error(f"❌ Ошибка синхронизации команд: {e}")
+            
+            # Установка статуса
+            await self.change_presence(
+                activity=discord.Activity(
+                    type=discord.ActivityType.listening,
+                    name="🎵 /play"
+                )
             )
-        )
+        else:
+            self.logger.info("🔄 Бот переподключился")
+
+    @commands.Cog.listener()
+    async def on_wavelink_track_start(self, payload: wavelink.TrackStartEventPayload) -> None:
+        """Handle track start event using new event handler."""
+        await self.track_start_event.handle(payload)
+
+    @commands.Cog.listener()
+    async def on_wavelink_track_end(self, payload: wavelink.TrackEndEventPayload) -> None:
+        """Handle track end event using new event handler."""
+        await self.track_end_event.handle(payload)
 
     async def reload_cogs(self, category: str = None):
         """🔄 Перезагрузка когов"""

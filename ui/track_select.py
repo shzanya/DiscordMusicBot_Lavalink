@@ -3,6 +3,7 @@ from discord import Interaction, SelectOption
 from typing import Optional
 import discord
 from ui.music_embeds import create_track_finished_embed  # убедись, что импорт работает
+from utils.validators import check_player_ownership
 import logging
 
 from utils.formatters import (
@@ -19,39 +20,52 @@ class TrackSelect(Select):
         # Получаем историю (последние 25 треков, от новых к старым, без дубликатов)
         history = getattr(self.player, 'history', [])
         seen = set()
-        unique_history = [t for t in reversed(history[-25:]) if not (t.uri in seen or seen.add(t.uri))]
+        unique_history = []
+        
+        # Обрабатываем историю в обратном порядке (новые треки первыми)
+        for track in reversed(history[-25:]):
+            track_uri = getattr(track, 'uri', getattr(track, 'identifier', ''))
+            if track_uri and track_uri not in seen:
+                seen.add(track_uri)
+                unique_history.append(track)
+        
         self.tracks = unique_history
 
         options = []
-        for i, track in enumerate(self.tracks):
-            author = getattr(track, 'author', 'Unknown Artist')
-            title = getattr(track, 'title', 'Unknown Track')
-            label = f"{author} - {title}"
+        if self.tracks:
+            for i, track in enumerate(self.tracks):
+                author = getattr(track, 'author', 'Unknown Artist')
+                title = getattr(track, 'title', 'Unknown Track')
+                label = f"{author} - {title}"
 
-            if len(label) > 100:
-                label = label[:97] + "..."
+                if len(label) > 100:
+                    label = label[:97] + "..."
 
-            options.append(SelectOption(
-                label=label,
-                value=str(i),
-                description=f"Длительность: {format_duration(getattr(track, 'length', 0))}"
-            ))
-
-        disabled = not bool(options)
-
-        if not options:
-            options = [SelectOption(label="История пуста", value="none")]
+                duration = getattr(track, 'length', 0)
+                duration_str = format_duration(duration) if duration > 0 else "Unknown"
+                
+                options.append(SelectOption(
+                    label=label,
+                    value=str(i),
+                    description=f"Длительность: {duration_str}"
+                ))
+        else:
+            options = [SelectOption(label="История пуста", value="none", description="Нет прослушанных треков")]
 
         super().__init__(
             placeholder="Выберите трек из истории воспроизведения",
             min_values=1,
             max_values=1,
             options=options,
-            disabled=disabled,
+            disabled=not bool(self.tracks),
             custom_id="track_select"
         )
 
     async def callback(self, interaction: Interaction):
+        # Проверяем владельца плеера
+        if not await check_player_ownership(interaction, self.player):
+            return
+            
         if self.values[0] == "none":
             await interaction.response.send_message("❌ История пуста.", ephemeral=True)
             return
@@ -88,13 +102,26 @@ class TrackSelect(Select):
         self.player.now_playing_message = None
 
         # Добавляем трек в плейлист, если его там нет
-        if track not in self.player.playlist:
+        track_uri = getattr(track, 'uri', getattr(track, 'identifier', ''))
+        track_in_playlist = any(
+            getattr(t, 'uri', getattr(t, 'identifier', '')) == track_uri 
+            for t in self.player.playlist
+        )
+        
+        if not track_in_playlist:
             if self.requester:
                 track.requester = self.requester
             await self.player.add_track(track)
-
-        await interaction.response.defer()
-        success = await self.player.play_by_index(self.player.playlist.index(track))
+            await interaction.response.defer()
+            success = await self.player.play_by_index(len(self.player.playlist) - 1)
+        else:
+            # Если трек уже в плейлисте, находим его индекс
+            playlist_index = next(
+                i for i, t in enumerate(self.player.playlist)
+                if getattr(t, 'uri', getattr(t, 'identifier', '')) == track_uri
+            )
+            await interaction.response.defer()
+            success = await self.player.play_by_index(playlist_index)
 
         if success:
             try:

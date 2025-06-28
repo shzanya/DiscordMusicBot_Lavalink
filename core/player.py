@@ -56,8 +56,28 @@ class HarmonyPlayer(wavelink.Player):
             from ui.views import MusicPlayerView
             from ui.embeds import create_now_playing_embed
 
-            embed = create_now_playing_embed(track, self)
-            view = await MusicPlayerView.create(self)
+            # Получаем настройки гильдии
+            guild_id = self.guild.id if self.guild else None
+            if guild_id:
+                try:
+                    from services import mongo_service
+                    settings = await mongo_service.get_guild_settings(guild_id)
+                    color = settings.get("color", "default")
+                    custom_emojis = settings.get("custom_emojis", None)
+                except Exception:
+                    color = "default"
+                    custom_emojis = None
+            else:
+                color = "default"
+                custom_emojis = None
+
+            embed = create_now_playing_embed(
+                track, self, 
+                color=color, custom_emojis=custom_emojis
+            )
+            view = await MusicPlayerView.create(
+                self, color=color, custom_emojis=custom_emojis
+            )
 
             try:
                 await self.controller_message.edit(embed=embed, view=view)

@@ -26,6 +26,13 @@ def create_queue_embed(
     user: discord.User
 ) -> discord.Embed:
     """📄 Создание embed для очереди треков"""
+    if not queue and not now_playing:
+        embed = discord.Embed(
+            title="—・Пустая очередь сервера",
+            description="Я покинула канал, потому что в очереди не осталось треков",
+            color=Colors.MUSIC
+        )
+        return embed
     embed = discord.Embed(
         title=f"—・Очередь сервера {guild.name}",
         color=Colors.MUSIC

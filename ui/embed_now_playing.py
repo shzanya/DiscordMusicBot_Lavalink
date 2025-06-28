@@ -84,11 +84,24 @@ def create_now_playing_embed(
     requester_name = (
         requester.display_name if requester and hasattr(requester, 'display_name') else 'Unknown'
     )
+    
+    # Additional safety check
+    if not isinstance(requester_name, str):
+        requester_name = 'Unknown'
+    
+    # Получаем текущую громкость
+    try:
+        volume = getattr(player, 'volume', 100)
+        volume_emoji = "🔇" if volume == 0 else "🔉" if volume < 50 else "🔊"
+        volume_info = f" | {volume_emoji} {volume}%"
+    except Exception:
+        volume_info = ""
+    
     description = (
         f"{track_link}\n\n"
         f"> Запрос от {requester_name}:\n"
         f"{progress_bar}\n\n"
-        f"Играет — `[{current_time}/{total_time}]`"
+        f"Играет — `[{current_time}/{total_time}]{volume_info}`"
     )
     
     embed = discord.Embed(

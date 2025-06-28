@@ -29,17 +29,27 @@ class NowPlayingUpdater:
         if self.update_task and not self.update_task.done():
             self.update_task.cancel()
     
-    async def register_message(self, guild_id: int, message: discord.Message, player: HarmonyPlayer, track: wavelink.Playable, requester: discord.Member):
-        """Register message for auto-updating"""
+    async def register_message(
+        self, 
+        guild_id: int, 
+        message: discord.Message, 
+        player: HarmonyPlayer, 
+        track: wavelink.Playable, 
+        requester: discord.Member,
+        color: str = "default",
+        custom_emojis: dict = None
+    ):
+        """Регистрация сообщения для автообновления"""
         if not message or not player:
             return
-            
         self.active_messages[guild_id] = {
             'message': message,
             'player': player,
             'track': track,
             'requester': requester,
-            'last_update': 0
+            'last_update': 0,
+            'color': color,
+            'custom_emojis': custom_emojis
         }
         self.start_updater()
     
@@ -109,7 +119,12 @@ class NowPlayingUpdater:
 
             # Create and send updated embed
             requester = info.get('requester')
-            embed = create_now_playing_embed(current_track, player, requester)
+            color = info.get('color', 'default')
+            custom_emojis = info.get('custom_emojis', None)
+            embed = create_now_playing_embed(
+                current_track, player, requester,
+                color=color, custom_emojis=custom_emojis
+            )
             await message.edit(embed=embed)
             
         except discord.NotFound:
@@ -174,12 +189,18 @@ def create_queue_embed(
 
 
 
-async def send_now_playing_message(channel, track: wavelink.Playable, player: HarmonyPlayer, requester: discord.Member) -> discord.Message:
+async def send_now_playing_message(channel, track: wavelink.Playable, player: HarmonyPlayer, requester: discord.Member, color: str = "default", custom_emojis: dict = None) -> discord.Message:
     """Отправка сообщения с автообновлением и кнопками управления"""
-    embed = create_now_playing_embed(track, player, requester)
+    embed = create_now_playing_embed(
+        track, player, requester,
+        color=color, custom_emojis=custom_emojis
+    )
 
     # Создаем view без message
-    view = await MusicPlayerView.create(player, None, requester)
+    view = await MusicPlayerView.create(
+        player, None, requester,
+        color=color, custom_emojis=custom_emojis
+    )
 
     # Отправляем embed с view
     message = await channel.send(embed=embed, view=view)
@@ -195,7 +216,9 @@ async def send_now_playing_message(channel, track: wavelink.Playable, player: Ha
         message,
         player,
         track,
-        requester
+        requester,
+        color=color,
+        custom_emojis=custom_emojis
     )
 
     return message

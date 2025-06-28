@@ -15,7 +15,6 @@ from ui.music_embeds import (
     create_connection_error_embed,
     create_empty_queue_embed,
     create_permission_error_embed,
-    create_queue_embed,
     create_search_error_embed,
     create_track_added_embed,
     create_track_finished_embed,
@@ -28,6 +27,9 @@ from ui.progress_updater import (
 )
 from ui.views import QueueView
 from services import mongo_service
+from services.queue_service import queue_manager
+from utils.autocomplete import track_autocomplete
+from utils.validators import check_player_ownership
 
 logger = logging.getLogger(__name__)
 
@@ -36,57 +38,6 @@ connection_locks: Dict[int, asyncio.Lock] = {}
 _autocomplete_cache = {}
 _cache_lock = asyncio.Lock()
 
-async def track_autocomplete(interaction, current: str) -> list[app_commands.Choice[str]]:
-    query = (current or "").strip()
-    if len(query) < 2:
-        return []
-    
-    query = query[:50]
-    
-    async with _cache_lock:
-        if query in _autocomplete_cache:
-            cached_time, cached_choices = _autocomplete_cache[query]
-            if time.time() - cached_time < 30:
-                return cached_choices
-    
-    try:
-        results = await asyncio.wait_for(
-            wavelink.Playable.search(query, source=wavelink.TrackSource.SoundCloud),
-            timeout=0.5
-        )
-        
-        if not results:
-            return []
-        
-        choices = []
-        for track in results[:15]:
-            try:
-                title = getattr(track, 'title', 'Unknown') or 'Unknown'
-                author = getattr(track, 'author', 'Unknown') or 'Unknown'
-                uri = getattr(track, 'uri', '') or getattr(track, 'identifier', '')
-                
-                if not uri:
-                    continue
-                
-                display = f"{author} – {title}"
-                if len(display) > 97:
-                    display = display[:94] + "..."
-                
-                choices.append(app_commands.Choice(name=display, value=uri))
-            except Exception:
-                continue
-        
-        async with _cache_lock:
-            _autocomplete_cache[query] = (time.time(), choices)
-            if len(_autocomplete_cache) > 100:
-                oldest_key = min(_autocomplete_cache.keys(),
-                                 key=lambda k: _autocomplete_cache[k][0])
-                del _autocomplete_cache[oldest_key]
-        
-        return choices
-    
-    except (asyncio.TimeoutError, Exception):
-        return []
 
 class HarmonyPlayer(wavelink.Player):
     def __init__(self, *args, **kwargs):
@@ -165,25 +116,6 @@ class HarmonyPlayer(wavelink.Player):
         self._is_destroyed = True
         await super().disconnect()
 
-    async def on_wavelink_track_start(self, payload: wavelink.TrackStartEventPayload) -> None:
-        if self._handling_track_start:
-            return
-        self._handling_track_start = True
-        try:
-            logger.debug(f"Track start event for player {id(self)} in guild {self.guild.id}")
-            track = payload.track
-            if not track or self._is_destroyed:
-                return
-            await self.apply_saved_effects()
-            self._last_position = 0.0
-            self.start_time_real = time.time()
-            self.speed_override = getattr(self, 'speed_override', 1.0)
-            logger.info(f"Track started: {track.title}")
-        except Exception as e:
-            logger.error(f"Error in on_wavelink_track_start: {e}")
-        finally:
-            self._handling_track_start = False
-
     async def play_track(self, track: wavelink.Playable, *, add_to_history: bool = True, clear_forward: bool = True, **kwargs) -> None:
         try:
             from ui.views import MusicPlayerView
@@ -204,17 +136,26 @@ class HarmonyPlayer(wavelink.Player):
                     # Получаем настройки гильдии
                     guild_id = self.text_channel.guild.id if self.text_channel and self.text_channel.guild else None
                     settings = await mongo_service.get_guild_settings(guild_id) if guild_id else {}
+                    # Убеждаемся что settings не None
+                    if settings is None:
+                        settings = {}
                     color = settings.get("color", "default")
                     custom_emojis = settings.get("custom_emojis", None)
+                    
+                    # Ensure requester is valid
+                    requester = track.requester
+                    if not requester:
+                        requester = self.text_channel.guild.me if self.text_channel else None
+                    
                     view = await MusicPlayerView.create(
-                        self, None, track.requester,
+                        self, None, requester,
                         color=color, custom_emojis=custom_emojis
                     )
                     self.now_playing_message = await send_now_playing_message(
                         self.text_channel,
                         track,
                         self,
-                        requester=track.requester,
+                        requester=requester,
                         view=view,
                         color=color,
                         custom_emojis=custom_emojis
@@ -235,7 +176,13 @@ class HarmonyPlayer(wavelink.Player):
         track = self.playlist[index]
         if not hasattr(track, "requester") or not track.requester:
             track.requester = self.text_channel.guild.me if self.text_channel else None
-        await self.play_track(track, requester=track.requester, add_to_history=False, clear_forward=False)
+        
+        # Ensure requester is valid
+        requester = track.requester
+        if not requester:
+            requester = self.text_channel.guild.me if self.text_channel else None
+        
+        await self.play_track(track, requester=requester, add_to_history=False, clear_forward=False)
         logger.info(f"🎯 Playing track at index {index}: {track.title}")
         return True
 
@@ -262,6 +209,10 @@ class HarmonyPlayer(wavelink.Player):
             track.requester = track.requester or (self.text_channel.guild.me if self.text_channel else None)
             self.playlist.append(track)
             logger.info(f"Added track: {track.title}")
+            
+            # Auto-save queue after adding track
+            if self.text_channel and self.text_channel.guild:
+                await queue_manager.save_queue(self.text_channel.guild.id, self)
         else:
             logger.info(f"Track already in playlist: {track.title}")
         should_autostart = self._current_track is None or self.current_index == -1
@@ -279,6 +230,55 @@ class HarmonyPlayer(wavelink.Player):
         self.current_index = 0
         if tracks:
             await self.play_by_index(self.current_index)
+        
+        # Auto-save queue after loading playlist
+        if self.text_channel and self.text_channel.guild:
+            await queue_manager.save_queue(self.text_channel.guild.id, self)
+
+    async def load_saved_queue(self) -> bool:
+        """Load saved queue from database."""
+        if not self.text_channel or not self.text_channel.guild:
+            return False
+        
+        try:
+            success = await queue_manager.load_queue(self.text_channel.guild.id, self)
+            if success:
+                logger.info(f"Loaded saved queue for guild {self.text_channel.guild.id}")
+                return True
+            else:
+                logger.info(f"No saved queue found for guild {self.text_channel.guild.id}")
+                return False
+        except Exception as e:
+            logger.error(f"Error loading saved queue: {e}")
+            return False
+
+    async def save_queue(self) -> bool:
+        """Save current queue to database."""
+        if not self.text_channel or not self.text_channel.guild:
+            return False
+        
+        try:
+            success = await queue_manager.save_queue(self.text_channel.guild.id, self)
+            if success:
+                logger.debug(f"Saved queue for guild {self.text_channel.guild.id}")
+            return success
+        except Exception as e:
+            logger.error(f"Error saving queue: {e}")
+            return False
+
+    async def clear_saved_queue(self) -> bool:
+        """Clear saved queue from database."""
+        if not self.text_channel or not self.text_channel.guild:
+            return False
+        
+        try:
+            success = await queue_manager.clear_queue(self.text_channel.guild.id)
+            if success:
+                logger.info(f"Cleared saved queue for guild {self.text_channel.guild.id}")
+            return success
+        except Exception as e:
+            logger.error(f"Error clearing saved queue: {e}")
+            return False
 
     @property
     def is_paused(self) -> bool:
@@ -304,6 +304,85 @@ class HarmonyPlayer(wavelink.Player):
         except Exception:
             return False
 
+    @property
+    def volume(self) -> int:
+        """Get current volume"""
+        return getattr(self, '_volume', 100)
+    
+    @volume.setter
+    def volume(self, value: int) -> None:
+        """Set volume and apply it to the player"""
+        # Clamp between 0 and 200
+        self._volume = max(0, min(200, value))
+        
+        # Применяем громкость к базовому плееру через wavelink
+        try:
+            # Используем правильный метод wavelink для установки громкости
+            if hasattr(self, '_node') and self._node:
+                # Отправляем команду напрямую в Lavalink
+                asyncio.create_task(self._node.send({
+                    'op': 'volume',
+                    'guildId': str(self.guild.id),
+                    'volume': self._volume
+                }))
+            else:
+                # Fallback: используем базовый метод wavelink
+                try:
+                    # Применяем громкость к текущему треку
+                    if hasattr(super(), 'volume'):
+                        super().volume = self._volume
+                    else:
+                        # Если нет базового метода, используем фильтры
+                        import wavelink
+                        filters = wavelink.Filters()
+                        # Конвертируем в float 0.0-2.0
+                        filters.volume = self._volume / 100.0
+                        asyncio.create_task(self.set_filters(filters))
+                except Exception as e:
+                    logger.warning(
+                        f"Could not set volume via wavelink: {e}"
+                    )
+                    # Последняя попытка через фильтры
+                    try:
+                        import wavelink
+                        filters = wavelink.Filters()
+                        filters.volume = self._volume / 100.0
+                        asyncio.create_task(self.set_filters(filters))
+                    except Exception as e2:
+                        logger.error(
+                            f"Failed to set volume via filters: {e2}"
+                        )
+        except Exception as e:
+            logger.warning(f"Could not set volume: {e}")
+        
+        # Сохраняем громкость в БД для сервера
+        if self.text_channel and self.text_channel.guild:
+            asyncio.create_task(self._save_volume_to_db())
+    
+    async def _save_volume_to_db(self) -> None:
+        """Сохранить громкость в БД"""
+        try:
+            guild_id = self.text_channel.guild.id
+            await mongo_service.set_guild_volume(guild_id, self._volume)
+        except Exception as e:
+            logger.error(f"Error saving volume to DB: {e}")
+    
+    async def _load_volume_from_db(self) -> None:
+        """Загрузить громкость из БД"""
+        try:
+            if self.text_channel and self.text_channel.guild:
+                guild_id = self.text_channel.guild.id
+                volume = await mongo_service.get_guild_volume(guild_id)
+                self._volume = volume
+                # Применяем громкость к базовому плееру
+                try:
+                    super().volume = volume
+                except Exception as e:
+                    logger.warning(f"Could not set volume on base player: {e}")
+        except Exception as e:
+            logger.error(f"Error loading volume from DB: {e}")
+            self._volume = 100  # Default volume
+
     async def _start_idle_timer(self, timeout: int = 300) -> None:
         if self._auto_leave_task:
             self._auto_leave_task.cancel()
@@ -314,7 +393,7 @@ class HarmonyPlayer(wavelink.Player):
                 logger.info("[Idle Timer] Disconnected from voice channel due to inactivity.")
         self._auto_leave_task = asyncio.create_task(idle_disconnect())
 
-    async def show_queue(self, interaction: discord.Interaction, page: int = 1) -> None:
+    async def show_queue(self, interaction: discord.Interaction, page: int = 1, edit: bool = False, view: discord.ui.View = None) -> None:
         try:
             items_per_page = 10
             total_tracks = len(self.playlist)
@@ -324,6 +403,45 @@ class HarmonyPlayer(wavelink.Player):
             start_index = (page - 1) * items_per_page
             end_index = start_index + items_per_page
             visible_queue = self.playlist[start_index:end_index]
+            guild_id = interaction.guild.id if interaction.guild else None
+            settings = await mongo_service.get_guild_settings(guild_id) if guild_id else {}
+            color = settings.get("color", "default")
+            custom_emojis = settings.get("custom_emojis", None)
+
+            # Если очередь пуста
+            if total_tracks == 0:
+                from ui.music_embeds import create_queue_embed
+                embed = create_queue_embed(
+                    guild=interaction.guild,
+                    now_playing=None,
+                    queue=[],
+                    page=1,
+                    total_pages=1,
+                    user=interaction.user
+                )
+                # Отключаем все кнопки
+                if view is None:
+                    view = await QueueView.create(
+                        player=self,
+                        user=interaction.user,
+                        page=1,
+                        total_pages=1,
+                        color=color,
+                        custom_emojis=custom_emojis
+                    )
+                for item in view.children:
+                    item.disabled = True
+                if edit and interaction.message:
+                    await interaction.message.edit(embed=embed, view=view)
+                else:
+                    if not interaction.response.is_done():
+                        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+                    else:
+                        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+                return
+
+            # Обычная очередь
+            from ui.music_embeds import create_queue_embed
             embed = create_queue_embed(
                 guild=interaction.guild,
                 now_playing=self.current,
@@ -332,15 +450,25 @@ class HarmonyPlayer(wavelink.Player):
                 total_pages=total_pages,
                 user=interaction.user
             )
-            view = await QueueView.create(player=self, user=interaction.user, page=page, total_pages=total_pages)
-            if not interaction.response.is_done():
-                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            if view is None:
+                view = await QueueView.create(
+                    player=self,
+                    user=interaction.user,
+                    page=page,
+                    total_pages=total_pages,
+                    color=color,
+                    custom_emojis=custom_emojis
+                )
+            view.page = page
+            view.total_pages = total_pages
+            view.update_page_buttons()
+            if edit and interaction.message:
+                await interaction.message.edit(embed=embed, view=view)
             else:
-                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-        except discord.InteractionResponded:
-            logger.warning("Interaction already responded to in show_queue")
-        except discord.NotFound:
-            logger.warning("Interaction not found (expired) in show_queue")
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+                else:
+                    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         except Exception as e:
             logger.error(f"Error in show_queue: {e}")
 
@@ -355,11 +483,20 @@ class HarmonyPlayer(wavelink.Player):
                 now_playing_updater.unregister_message(self.guild.id)
                 self.now_playing_message = None
                 self._current_track = None
+                
+                # Clear saved queue when playlist ends
+                await self.clear_saved_queue()
                 return
             old_track = self._current_track
+            # Добавляем пропущенный трек в историю
+            if old_track:
+                self._add_to_history(old_track)
             await self._finalize_track_message(old_track)
             self.now_playing_message = None
             await self.play_forward()
+            
+            # Auto-save queue after skip
+            await self.save_queue()
         except Exception as e:
             logger.error(f"❌ Skip failed: {e}")
 
@@ -369,14 +506,20 @@ class HarmonyPlayer(wavelink.Player):
                 logger.info("📭 Очередь пуста — отключаюсь")
                 if self.text_channel:
                     try:
-                        from ui.embeds import create_empty_queue_embed
+                        from ui.music_embeds import create_empty_queue_embed
                         await self.text_channel.send(embed=create_empty_queue_embed())
                     except Exception as e:
                         logger.error(f"❌ Не удалось отправить embed пустой очереди: {e}")
                 await self.cleanup_disconnect()
+                
+                # Clear saved queue when queue is empty
+                await self.clear_saved_queue()
                 return
             if self.state.loop_mode == LoopMode.TRACK and self._current_track:
-                await self.play_track(self._current_track, requester=self._current_track.requester)
+                requester = self._current_track.requester
+                if not requester:
+                    requester = self.text_channel.guild.me if self.text_channel else None
+                await self.play_track(self._current_track, requester=requester)
                 return
             if self.state.loop_mode == LoopMode.QUEUE and self._current_track:
                 self.current_index = (self.current_index + 1) % len(self.playlist)
@@ -391,7 +534,13 @@ class HarmonyPlayer(wavelink.Player):
                         return
                 await self._start_idle_timer()
                 return
+            # Добавляем завершенный трек в историю перед переходом к следующему
+            if self._current_track:
+                self._add_to_history(self._current_track)
             await self.play_by_index(self.current_index + 1)
+            
+            # Auto-save queue after track ends
+            await self.save_queue()
         except Exception as e:
             logger.error(f"❌ do_next error: {e}")
 
@@ -507,6 +656,19 @@ class Music(commands.Cog):
                 vc = await voice_channel.connect(cls=HarmonyPlayer, timeout=10.0)
                 vc.text_channel = interaction.channel
                 logger.info(f"Connected to voice channel: {voice_channel.name}")
+                
+                # Load volume from DB
+                try:
+                    await vc._load_volume_from_db()
+                except Exception as e:
+                    logger.warning(f"Failed to load volume from DB: {e}")
+                
+                # Try to load saved queue
+                try:
+                    await vc.load_saved_queue()
+                except Exception as e:
+                    logger.warning(f"Failed to load saved queue: {e}")
+                
                 return vc
             except asyncio.TimeoutError:
                 logger.error("Voice connection timeout")
@@ -537,13 +699,26 @@ class Music(commands.Cog):
         try:
             vc = interaction.guild.voice_client
             if not vc or not isinstance(vc, HarmonyPlayer):
-                # Показываем embed пустой очереди, а не ошибку подключения
                 await self._safe_send_response(
                     interaction,
                     create_empty_queue_embed(),
                     ephemeral=True
                 )
                 return
+            
+            # Проверяем владельца плеера
+            if not await check_player_ownership(interaction, vc):
+                return
+            
+            # Проверяем, есть ли треки в очереди или что-то играет
+            if not vc.playlist and not vc.current:
+                await self._safe_send_response(
+                    interaction,
+                    create_empty_queue_embed(),
+                    ephemeral=True
+                )
+                return
+                
             await vc.show_queue(interaction)
         except Exception as e:
             logger.error(f"Queue command error: {e}")
@@ -596,15 +771,36 @@ class Music(commands.Cog):
                 )
                 return
             
-            track = results[0]
-            track.requester = interaction.user
-            was_added = await vc.add_track(track)
-            
-            embed = create_track_added_embed(
-                track, 
-                len(vc.playlist) if was_added else 1
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            # Проверяем, является ли результат плейлистом
+            if hasattr(results, 'tracks') and results.tracks:
+                # Это плейлист - добавляем все треки
+                tracks = results.tracks
+                for track in tracks:
+                    track.requester = interaction.user
+                    await vc.add_track(track)
+                
+                embed = discord.Embed(
+                    title="📀 Плейлист добавлен",
+                    description=f"Добавлено **{len(tracks)} треков** в очередь",
+                    color=0x00ff00
+                )
+                embed.add_field(
+                    name="Плейлист", 
+                    value=f"**{results.name}**", 
+                    inline=False
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                # Это одиночный трек
+                track = results[0] if isinstance(results, list) else results
+                track.requester = interaction.user
+                was_added = await vc.add_track(track)
+                
+                embed = create_track_added_embed(
+                    track, 
+                    len(vc.playlist) if was_added else 1
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
             
         except asyncio.TimeoutError:
             await interaction.followup.send(
@@ -621,69 +817,6 @@ class Music(commands.Cog):
                 embed=create_error_embed("Ошибка", str(e)),
                 ephemeral=True
             )
-
-    @commands.Cog.listener()
-    async def on_wavelink_track_end(self, payload: wavelink.TrackEndEventPayload) -> None:
-        player: HarmonyPlayer = payload.player
-
-        if not player or getattr(player, "_is_destroyed", False):
-            logger.warning("❌ Invalid or destroyed player in track end event")
-            return
-
-        if getattr(player, "_handling_track_end", False):
-            logger.debug("Track end already handled")
-            return
-
-        if payload.reason == "replaced":
-            logger.info("🔁 Track replaced manually — skipping handler logic")
-            return
-
-        player._handling_track_end = True
-
-        try:
-            # --- ГАРАНТИЯ обновления эмбеда now_playing на 'Прослушано' с view=None ---
-            if player._current_track and player.text_channel:
-                embed = create_track_finished_embed(player._current_track, position=payload.track.length)
-                try:
-                    if player.now_playing_message:
-                        try:
-                            await player.now_playing_message.edit(embed=embed, view=None)
-                            logger.info("✅ Обновлен embed завершенного трека (гарантировано)")
-                        except discord.HTTPException as e:
-                            logger.warning(f"Не удалось обновить embed: {e}")
-                            await player.text_channel.send(embed=embed)
-                            logger.info("✅ Отправлен новый embed завершенного трека после ошибки (гарантировано)")
-                    else:
-                        await player.text_channel.send(embed=embed)
-                        logger.info("✅ Отправлен новый embed завершенного трека (гарантировано)")
-                except discord.HTTPException as e:
-                    logger.error(f"Не удалось отправить embed: {e}")
-
-            # Очищаем текущее сообщение и трек
-            player.now_playing_message = None
-            player._current_track = None
-
-            # Проверяем, есть ли следующий трек
-            if not player.playlist or player.current_index >= len(player.playlist) - 1:
-                logger.info("🚪 Очередь пуста — отключаюсь")
-                if player.text_channel:
-                    try:
-                        embed = create_empty_queue_embed()
-                        await player.text_channel.send(embed=embed)
-                        logger.info("✅ Отправлен embed пустой очереди")
-                    except Exception as e:
-                        logger.error(f"❌ Ошибка при отправке embed пустой очереди: {e}")
-                await player.cleanup_disconnect()
-                return
-
-            # Переходим к следующему треку
-            player.current_index += 1
-            await player.play_by_index(player.current_index)
-
-        except Exception as e:
-            logger.error(f"❌ Track end handler failed: {e}")
-        finally:
-            player._handling_track_end = False
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState) -> None:
