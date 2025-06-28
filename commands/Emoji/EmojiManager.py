@@ -14,7 +14,7 @@ from PIL import Image
 
 class EmojiManager(commands.Cog):
     def __init__(self, bot):
-        self.replace_existing = False  # тут TRue если хотите цвета
+        self.replace_existing = True  # тут TRue если хотите цвета
         self.bot = bot
         self.logger = logging.getLogger(__name__)
         self.session = None

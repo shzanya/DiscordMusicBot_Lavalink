@@ -21,9 +21,6 @@ class Settings:
     LAVALINK_PASSWORD: str = os.getenv("LAVALINK_PASSWORD", "youshallnotpass")
     LAVALINK_SECURE: bool = os.getenv("LAVALINK_SECURE", "false").lower() == "true"
 
-    # 💾 База данных
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///harmony.db")
-
     # 🎵 Spotify
     SPOTIFY_CLIENT_ID: Optional[str] = os.getenv("SPOTIFY_CLIENT_ID")
     SPOTIFY_CLIENT_SECRET: Optional[str] = os.getenv("SPOTIFY_CLIENT_SECRET")
