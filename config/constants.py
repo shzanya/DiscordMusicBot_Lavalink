@@ -40,10 +40,21 @@ class Emojis:
 def get_emoji(
     base_name: str, color: str = "default", custom_emojis: dict = None
 ) -> str:
-    suffix = Emojis._color_suffixes.get(color, "")
-    attr_name = f"{base_name}_{suffix.upper()}" if suffix else base_name
+    # Если есть кастомные эмодзи, используем их
     if custom_emojis and base_name in custom_emojis:
         return custom_emojis[base_name]
+
+    # Для дефолтного цвета используем базовое имя
+    if color == "default":
+        if hasattr(CustomEmojis, base_name):
+            return getattr(CustomEmojis, base_name)
+        else:
+            return "❓"
+
+    # Для других цветов добавляем суффикс
+    suffix = Emojis._color_suffixes.get(color, "")
+    attr_name = f"{base_name}_{suffix.upper()}" if suffix else base_name
+
     if hasattr(CustomEmojis, attr_name):
         return getattr(CustomEmojis, attr_name)
     elif hasattr(CustomEmojis, base_name):

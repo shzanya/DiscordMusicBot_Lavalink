@@ -94,6 +94,20 @@ class MongoService:
             {"guild_id": guild_id_str}, {"$set": {"volume": volume}}, upsert=True
         )
 
+    # Методы для работы с режимом повтора сервера
+    async def get_guild_loop_mode(self, guild_id: int) -> str:
+        """Получить режим повтора сервера"""
+        guild_id_str = str(guild_id)
+        doc = await self.guild_settings.find_one({"guild_id": guild_id_str})
+        return doc.get("loop_mode", "none") if doc else "none"
+
+    async def set_guild_loop_mode(self, guild_id: int, loop_mode: str) -> None:
+        """Установить режим повтора сервера"""
+        guild_id_str = str(guild_id)
+        await self.guild_settings.update_one(
+            {"guild_id": guild_id_str}, {"$set": {"loop_mode": loop_mode}}, upsert=True
+        )
+
 
 # Глобальный экземпляр для использования во всем проекте
 mongo_service = MongoService()

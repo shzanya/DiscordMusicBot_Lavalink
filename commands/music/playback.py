@@ -12,13 +12,9 @@ from commands.music.effects import AudioEffectsManager, EffectType
 from core.player import LoopMode, PlayerState
 from ui.embeds import create_error_embed
 from ui.music_embeds import (
-    create_connection_error_embed,
     create_empty_queue_embed,
-    create_permission_error_embed,
-    create_search_error_embed,
-    create_track_added_embed,
-    create_track_finished_embed,
 )
+from utils.builders.embed import build_disconnect_embed, build_no_next_track_embed, build_no_previous_track_embed, build_permission_error_embed, build_track_added_embed, build_track_finished_embed, build_search_error_embed, build_connection_error_embed
 
 from ui.progress_updater import (
     cleanup_updater,
@@ -30,6 +26,7 @@ from services import mongo_service
 from services.queue_service import queue_manager
 from utils.autocomplete import track_autocomplete
 from utils.validators import check_player_ownership
+from utils.helpers import safe_interaction_send
 
 logger = logging.getLogger(__name__)
 
@@ -132,9 +129,24 @@ class HarmonyPlayer(wavelink.Player):
         try:
             from ui.views import MusicPlayerView
 
+            # Если воспроизводим тот же трек (повтор), не добавляем в историю
+            is_repeat = self._current_track and getattr(
+                self._current_track, "uri", ""
+            ) == getattr(track, "uri", "")
+
+            # Удаляем старое сообщение перед созданием нового
+            if self.now_playing_message:
+                try:
+                    await self.now_playing_message.delete()
+                except discord.NotFound:
+                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to delete old message: {e}")
+                self.now_playing_message = None
+
             if self.view and isinstance(self.view, MusicPlayerView):
                 self.view.destroy()
-            if add_to_history and self._current_track:
+            if add_to_history and self._current_track and not is_repeat:
                 self._add_to_history(self._current_track)
             self._current_track = track
             track.requester = kwargs.pop("requester", None) or (
@@ -217,22 +229,175 @@ class HarmonyPlayer(wavelink.Player):
         logger.info(f"🎯 Playing track at index {index}: {track.title}")
         return True
 
-    async def play_previous(self) -> bool:
-        if self.current_index <= 0:
-            logger.info("⏮ Невозможно вернуться: на первом треке")
+    async def _get_guild_settings(self) -> dict:
+        """Получить настройки гильдии из БД"""
+        if not self.text_channel or not self.text_channel.guild:
+            return {"color": "default", "custom_emojis": {}}
+        
+        try:
+            from services.mongo_service import get_guild_settings
+            # Проверяем, инициализирована ли MongoDB
+            from services.mongo_service import db
+            if db is None:
+                logger.warning("MongoDB not initialized, using default settings")
+                return {"color": "default", "custom_emojis": {}}
+            
+            settings = await get_guild_settings(self.text_channel.guild.id)
+            return {
+                "color": settings.get("color", "default"),
+                "custom_emojis": settings.get("custom_emojis", {})
+            }
+        except Exception as e:
+            logger.error(f"Error getting guild settings: {e}")
+            return {"color": "default", "custom_emojis": {}}
+
+    async def play_previous(self, interaction: discord.Interaction = None) -> bool:
+        if not self.playlist:
+            logger.info("⏮ Нет треков в плейлисте")
+            if interaction:
+                try:
+                    guild_settings = await self._get_guild_settings()
+                    embed = build_no_previous_track_embed(
+                        color=guild_settings["color"],
+                        custom_emojis=guild_settings["custom_emojis"]
+                    )
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                except Exception as e:
+                    logger.error(f"❌ Error sending no previous track embed: {e}")
+            elif self.text_channel:
+                try:
+                    guild_settings = await self._get_guild_settings()
+                    embed = build_no_previous_track_embed(
+                        color=guild_settings["color"],
+                        custom_emojis=guild_settings["custom_emojis"]
+                    )
+                    await self.text_channel.send(embed=embed)
+                except Exception as e:
+                    logger.error(f"❌ Error sending no previous track embed: {e}")
             return False
+
+        # Если включён повтор трека, возвращаемся к тому же треку
+    if self.state.loop_mode == LoopMode.TRACK and self._current_track:
         old_track = self._current_track
         await self._finalize_track_message(old_track)
         self.now_playing_message = None
         now_playing_updater.unregister_message(self.guild.id)
+            # Воспроизводим тот же трек заново
+        requester = self._current_track.requester
+        if not requester:
+            requester = self.text_channel.guild.me if self.text_channel else None
+            await self.play_track(self._current_track, requester=requester)
+            return True
+
+        # Проверяем, есть ли предыдущий трек (при отключенном повторе)
+        if self.state.loop_mode == LoopMode.NONE:
+            if self.current_index <= 0:
+                logger.info("⏮ Нет предыдущего трека (повтор отключен)")
+                if interaction:
+                    try:
+                        guild_settings = await self._get_guild_settings()
+                        embed = build_no_previous_track_embed(
+                            color=guild_settings["color"],
+                            custom_emojis=guild_settings["custom_emojis"]
+                        )
+                        await interaction.response.send_message(embed=embed, ephemeral=True)
+                    except Exception as e:
+                        logger.error(f"❌ Error sending no previous track embed: {e}")
+                elif self.text_channel:
+                    try:
+                        guild_settings = await self._get_guild_settings()
+                        embed = build_no_previous_track_embed(
+                            color=guild_settings["color"],
+                            custom_emojis=guild_settings["custom_emojis"]
+                        )
+                        await self.text_channel.send(embed=embed)
+                    except Exception as e:
+                        logger.error(f"❌ Error sending no previous track embed: {e}")
+                return False
+
+        # Циклический переход к предыдущему треку
+        if self.current_index <= 0:
+            self.current_index = len(self.playlist) - 1
+    else:
         self.current_index -= 1
+
+        old_track = self._current_track
+        await self._finalize_track_message(old_track)
+        self.now_playing_message = None
+        now_playing_updater.unregister_message(self.guild.id)
         return await self.play_by_index(self.current_index)
 
-    async def play_forward(self) -> bool:
-        if self.current_index >= len(self.playlist) - 1:
-            logger.info("⏭ Конец плейлиста")
+    async def play_forward(self, interaction: discord.Interaction = None) -> bool:
+        if not self.playlist:
+            logger.info("⏭ Нет треков в плейлисте")
+            if interaction:
+                try:
+                    guild_settings = await self._get_guild_settings()
+                    embed = build_no_next_track_embed(
+                        color=guild_settings["color"],
+                        custom_emojis=guild_settings["custom_emojis"]
+                    )
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                except Exception as e:
+                    logger.error(f"❌ Error sending no next track embed: {e}")
+            elif self.text_channel:
+                try:
+                    guild_settings = await self._get_guild_settings()
+                    embed = build_no_next_track_embed(
+                        color=guild_settings["color"],
+                        custom_emojis=guild_settings["custom_emojis"]
+                    )
+                    await self.text_channel.send(embed=embed)
+                except Exception as e:
+                    logger.error(f"❌ Error sending no next track embed: {e}")
             return False
-        return await self.play_by_index(self.current_index + 1)
+
+        # Если включён повтор трека, возвращаемся к тому же треку
+        if self.state.loop_mode == LoopMode.TRACK and self._current_track:
+            old_track = self._current_track
+            await self._finalize_track_message(old_track)
+            self.now_playing_message = None
+            now_playing_updater.unregister_message(self.guild.id)
+            # Воспроизводим тот же трек заново
+            requester = self._current_track.requester
+            if not requester:
+                requester = self.text_channel.guild.me if self.text_channel else None
+            await self.play_track(self._current_track, requester=requester)
+            return True
+
+        # Проверяем, есть ли следующий трек (при отключенном повторе)
+    if self.state.loop_mode == LoopMode.NONE:
+        if self.current_index >= len(self.playlist) - 1:
+                logger.info("⏭ Нет следующего трека (повтор отключен)")
+                if interaction:
+                    try:
+                        guild_settings = await self._get_guild_settings()
+                        embed = build_no_next_track_embed(
+                            color=guild_settings["color"],
+                            custom_emojis=guild_settings["custom_emojis"]
+                        )
+                        await interaction.response.send_message(embed=embed, ephemeral=True)
+                    except Exception as e:
+                        logger.error(f"❌ Error sending no next track embed: {e}")
+                elif self.text_channel:
+                    try:
+                        guild_settings = await self._get_guild_settings()
+                        embed = build_no_next_track_embed(
+                            color=guild_settings["color"],
+                            custom_emojis=guild_settings["custom_emojis"]
+                        )
+                        await self.text_channel.send(embed=embed)
+                    except Exception as e:
+                        logger.error(f"❌ Error sending no next track embed: {e}")
+                return False
+
+        # Циклический переход к следующему треку
+        if self.current_index >= len(self.playlist) - 1:
+            self.current_index = 0
+        else:
+            self.current_index += 1
+
+        return await self.play_by_index(self.current_index)
 
     async def add_track(self, track: wavelink.Playable) -> bool:
         track_uri = getattr(track, "uri", getattr(track, "identifier", ""))
@@ -399,6 +564,26 @@ class HarmonyPlayer(wavelink.Player):
             logger.error(f"Error loading volume from DB: {e}")
             self._volume = 100  # Default volume
 
+    async def _load_loop_mode_from_db(self) -> None:
+        """Загрузить режим повтора из БД"""
+        try:
+            if self.text_channel and self.text_channel.guild:
+                guild_id = self.text_channel.guild.id
+                loop_mode_str = await mongo_service.get_guild_loop_mode(guild_id)
+
+                # Конвертируем строку в enum
+                if loop_mode_str == "track":
+                    self.state.loop_mode = LoopMode.TRACK
+                elif loop_mode_str == "queue":
+                    self.state.loop_mode = LoopMode.QUEUE
+                else:
+                    self.state.loop_mode = LoopMode.NONE
+
+                logger.info(f"Loaded loop mode: {self.state.loop_mode}")
+        except Exception as e:
+            logger.error(f"Error loading loop mode from DB: {e}")
+            self.state.loop_mode = LoopMode.NONE
+
     async def _start_idle_timer(self, timeout: int = 300) -> None:
         if self._auto_leave_task:
             self._auto_leave_task.cancel()
@@ -532,28 +717,74 @@ class HarmonyPlayer(wavelink.Player):
         except Exception as e:
             logger.debug(f"Error in show_queue: {e}")
 
-    async def skip(self) -> None:
+    async def skip(self, interaction: discord.Interaction = None) -> None:
         if getattr(self, "_handling_track_end", False):
             logger.debug("⚠️ Skip ignored: track end handling in progress")
             return
         try:
-            if not self.playlist or self.current_index >= len(self.playlist) - 1:
-                logger.info("🚫 End of playlist, stopping playback")
+            if not self.playlist:
+                logger.info("🚫 Плейлист пуст, останавливаем воспроизведение")
                 await self.stop()
                 now_playing_updater.unregister_message(self.guild.id)
                 self.now_playing_message = None
                 self._current_track = None
-
-                # Clear saved queue when playlist ends
                 await self.clear_saved_queue()
                 return
+
+            # Если включён повтор трека, возвращаемся к тому же треку
+            if self.state.loop_mode == LoopMode.TRACK and self._current_track:
+                old_track = self._current_track
+                await self._finalize_track_message(old_track)
+                self.now_playing_message = None
+                now_playing_updater.unregister_message(self.guild.id)
+                # Воспроизводим тот же трек заново
+                requester = self._current_track.requester
+                if not requester:
+                    requester = (
+                        self.text_channel.guild.me if self.text_channel else None
+                    )
+                await self.play_track(self._current_track, requester=requester)
+                return
+
+            # Проверяем, есть ли следующий трек (при отключенном повторе)
+            if self.state.loop_mode == LoopMode.NONE:
+                if self.current_index >= len(self.playlist) - 1:
+                    logger.info("⏭ Нет следующего трека для пропуска (повтор отключен)")
+                    if interaction:
+                        try:
+                            guild_settings = await self._get_guild_settings()
+                            embed = build_no_next_track_embed(
+                                color=guild_settings["color"],
+                                custom_emojis=guild_settings["custom_emojis"]
+                            )
+                            await interaction.response.send_message(embed=embed, ephemeral=True)
+                        except Exception as e:
+                            logger.error(f"❌ Error sending no next track embed: {e}")
+                    elif self.text_channel:
+                        try:
+                            guild_settings = await self._get_guild_settings()
+                            embed = build_no_next_track_embed(
+                                color=guild_settings["color"],
+                                custom_emojis=guild_settings["custom_emojis"]
+                            )
+                            await self.text_channel.send(embed=embed)
+                        except Exception as e:
+                            logger.error(f"❌ Error sending no next track embed: {e}")
+                    return
+
+            # Циклический переход к следующему треку
+            if self.current_index >= len(self.playlist) - 1:
+                self.current_index = 0
+            else:
+                self.current_index += 1
+
             old_track = self._current_track
             # Добавляем пропущенный трек в историю
             if old_track:
                 self._add_to_history(old_track)
             await self._finalize_track_message(old_track)
             self.now_playing_message = None
-            await self.play_forward()
+            await self.play_by_index(self.current_index)
 
             # Auto-save queue after skip
             await self.save_queue()
@@ -578,6 +809,8 @@ class HarmonyPlayer(wavelink.Player):
                 # Clear saved queue when queue is empty
                 await self.clear_saved_queue()
                 return
+
+            # Повтор трека работает только при завершении трека
             if self.state.loop_mode == LoopMode.TRACK and self._current_track:
                 requester = self._current_track.requester
                 if not requester:
@@ -586,10 +819,12 @@ class HarmonyPlayer(wavelink.Player):
                     )
                 await self.play_track(self._current_track, requester=requester)
                 return
+
             if self.state.loop_mode == LoopMode.QUEUE and self._current_track:
                 self.current_index = (self.current_index + 1) % len(self.playlist)
                 await self.play_by_index(self.current_index)
                 return
+
             if self.current_index >= len(self.playlist) - 1:
                 if self.state.autoplay and self._current_track:
                     recommended = await self._get_autoplay_track()
@@ -599,6 +834,7 @@ class HarmonyPlayer(wavelink.Player):
                         return
                 await self._start_idle_timer()
                 return
+
             # Добавляем завершенный трек в историю перед переходом к следующему
             if self._current_track:
                 self._add_to_history(self._current_track)
@@ -655,9 +891,27 @@ class HarmonyPlayer(wavelink.Player):
     ) -> None:
         if not track or not self.text_channel:
             return
-        embed = create_track_finished_embed(
-            track, position=position or getattr(track, "length", None)
-        )
+        
+        # Получаем настройки гильдии для цвета
+        try:
+            guild_id = self.guild.id if self.guild else None
+            settings = await mongo_service.get_guild_settings(guild_id) if guild_id else {}
+            color = settings.get("color", "default")
+            custom_emojis = settings.get("custom_emojis", {})
+            
+            embed = build_track_finished_embed(
+                track=track,
+                position=position or getattr(track, "length", None),
+                color=color,
+                custom_emojis=custom_emojis
+            )
+        except Exception as e:
+            logger.error(f"Error getting guild settings: {e}")
+            embed = build_track_finished_embed(
+                track=track,
+                position=position or getattr(track, "length", None)
+            )
+        
         try:
             if self.now_playing_message:
                 await self.now_playing_message.edit(embed=embed, view=None)
@@ -746,6 +1000,12 @@ class Music(commands.Cog):
                 except Exception as e:
                     logger.warning(f"Failed to load volume from DB: {e}")
 
+                # Load loop mode from guild settings
+                try:
+                    await vc._load_loop_mode_from_db()
+                except Exception as e:
+                    logger.warning(f"Failed to load loop mode from DB: {e}")
+
                 # Try to load saved queue
                 try:
                     await vc.load_saved_queue()
@@ -826,9 +1086,23 @@ class Music(commands.Cog):
         try:
             voice_state = getattr(interaction.user, "voice", None)
             if not voice_state or not voice_state.channel:
-                await interaction.response.send_message(
-                    embed=create_permission_error_embed(), ephemeral=True
-                )
+                # Получаем настройки гильдии для цвета
+                try:
+                    guild_id = interaction.guild.id if interaction.guild else None
+                    settings = await mongo_service.get_guild_settings(guild_id) if guild_id else {}
+                    color = settings.get("color", "default")
+                    custom_emojis = settings.get("custom_emojis", {})
+                    
+                    embed = build_permission_error_embed(
+                        color=color,
+                        custom_emojis=custom_emojis
+                    )
+                except Exception as e:
+                    logger.error(f"Error getting guild settings: {e}")
+                    # Используем эмбед билдер даже для fallback
+                    embed = build_permission_error_embed()
+                
+                await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
 
             await interaction.response.defer(ephemeral=True)
@@ -836,9 +1110,22 @@ class Music(commands.Cog):
             vc = await self._ensure_voice_connection(interaction, vc_channel)
 
             if not vc:
-                await interaction.followup.send(
-                    embed=create_connection_error_embed(), ephemeral=True
-                )
+                # Получаем настройки гильдии для цвета
+                try:
+                    guild_id = interaction.guild.id if interaction.guild else None
+                    settings = await mongo_service.get_guild_settings(guild_id) if guild_id else {}
+                    color = settings.get("color", "default")
+                    custom_emojis = settings.get("custom_emojis", {})
+                    
+                    embed = build_connection_error_embed(
+                        color=color,
+                        custom_emojis=custom_emojis
+                    )
+                except Exception as e:
+                    logger.error(f"Error getting guild settings: {e}")
+                    embed = build_connection_error_embed()
+                
+                await interaction.followup.send(embed=embed, ephemeral=True)
                 return
 
             # Determine search source based on query type
@@ -850,9 +1137,23 @@ class Music(commands.Cog):
             )
 
             if not results:
-                await interaction.followup.send(
-                    embed=create_search_error_embed(query), ephemeral=True
-                )
+                # Получаем настройки гильдии для цвета
+                try:
+                    guild_id = interaction.guild.id if interaction.guild else None
+                    settings = await mongo_service.get_guild_settings(guild_id) if guild_id else {}
+                    color = settings.get("color", "default")
+                    custom_emojis = settings.get("custom_emojis", {})
+                    
+                    embed = build_search_error_embed(
+                        query=query,
+                        color=color,
+                        custom_emojis=custom_emojis
+                    )
+                except Exception as e:
+                    logger.error(f"Error getting guild settings: {e}")
+                    embed = build_search_error_embed(query=query)
+                
+                await interaction.followup.send(embed=embed, ephemeral=True)
                 return
 
             # Проверяем, является ли результат плейлистом
@@ -878,9 +1179,26 @@ class Music(commands.Cog):
                 track.requester = interaction.user
                 was_added = await vc.add_track(track)
 
-                embed = create_track_added_embed(
-                    track, len(vc.playlist) if was_added else 1
-                )
+                # Получаем настройки гильдии для цвета
+                try:
+                    guild_id = interaction.guild.id if interaction.guild else None
+                    settings = await mongo_service.get_guild_settings(guild_id) if guild_id else {}
+                    color = settings.get("color", "default")
+                    custom_emojis = settings.get("custom_emojis", {})
+                    
+                    embed = build_track_added_embed(
+                        track=track,
+                        position=len(vc.playlist) if was_added else 1,
+                        color=color,
+                        custom_emojis=custom_emojis
+                    )
+                except Exception as e:
+                    logger.error(f"Error getting guild settings: {e}")
+                    embed = build_track_added_embed(
+                        track=track,
+                        position=len(vc.playlist) if was_added else 1
+                    )
+                
                 await interaction.followup.send(embed=embed, ephemeral=True)
 
         except asyncio.TimeoutError:
@@ -907,14 +1225,54 @@ class Music(commands.Cog):
         after: discord.VoiceState,
     ) -> None:
         try:
-            if member.id != self.bot.user.id:
-                return
+            # Обработка отключения бота
+            if member.id == self.bot.user.id:
+                if before.channel and not after.channel:
+                    guild = before.channel.guild
+                    vc = guild.voice_client
+                    if vc and isinstance(vc, HarmonyPlayer):
+                        logger.info(f"Bot disconnected from voice in {guild.name}")
+                        await vc.cleanup_disconnect()
+                    return  # Выход из функции, чтобы не обрабатывать дважды
+
+            # Обработка выхода пользователей из голосового канала
             if before.channel and not after.channel:
+                # Пользователь покинул голосовой канал
                 guild = before.channel.guild
                 vc = guild.voice_client
-                if vc and isinstance(vc, HarmonyPlayer):
-                    logger.info(f"Bot disconnected from voice in {guild.name}")
-                    await vc.cleanup_disconnect()
+
+                if vc and isinstance(vc, HarmonyPlayer) and vc.channel == before.channel:
+                    # Проверяем, остались ли пользователи в канале (кроме бота)
+                    members_in_channel = [m for m in before.channel.members if not m.bot]
+
+                    if not members_in_channel:
+                        logger.info(f"All users left voice channel in {guild.name}, disconnecting bot")
+
+                        # Сначала обновляем эмбед плеера на "прослушано", если есть текущий трек
+                        if vc.text_channel and vc.current:
+                            try:
+                                position = getattr(vc, "position", 0) or 0
+                                await vc._finalize_track_message(vc.current, position=int(position))
+                                logger.info("✅ Updated player embed to finished track")
+                                await asyncio.sleep(1)
+                            except Exception as e:
+                                logger.error(f"❌ Error updating player embed: {e}")
+
+                        # Затем отправляем сообщение о выходе
+                        if vc.text_channel:
+                            try:
+                                embed = build_disconnect_embed(
+                                    reason="все вышли",
+                                    embed_color=0x242429
+                                )
+                                await vc.text_channel.send(embed=embed)
+                                logger.info("✅ Sent disconnect embed for empty channel")
+                            except Exception as e:
+                                logger.error(f"❌ Error sending disconnect embed: {e}")
+
+                        # Отключаемся от канала
+                        await vc.cleanup_disconnect()
+
         except Exception as e:
             logger.error(f"Voice state update handler failed: {e}")
 

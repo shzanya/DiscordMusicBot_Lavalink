@@ -10,6 +10,8 @@ from discord.ext import commands
 from core.player import HarmonyPlayer
 from ui.music_embeds import create_empty_queue_embed
 from ui.views import QueueView
+from utils.builders.embed import build_permission_error_embed
+from services import mongo_service
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +27,25 @@ class QueueCommand:
         try:
             # Check if user is in voice channel
             if not interaction.user.voice or not interaction.user.voice.channel:
-                await interaction.response.send_message(
-                    "❌ Вы должны быть в голосовом канале!", ephemeral=True
-                )
+                # Получаем настройки гильдии для цвета
+                try:
+                    guild_id = interaction.guild.id if interaction.guild else None
+                    settings = (
+                        await mongo_service.get_guild_settings(guild_id)
+                        if guild_id
+                        else {}
+                    )
+                    color = settings.get("color", "default")
+                    custom_emojis = settings.get("custom_emojis", {})
+
+                    embed = build_permission_error_embed(
+                        color=color, custom_emojis=custom_emojis
+                    )
+                except Exception as e:
+                    logger.error(f"Error getting guild settings: {e}")
+                    embed = build_permission_error_embed()
+
+                await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
 
             # Get voice client

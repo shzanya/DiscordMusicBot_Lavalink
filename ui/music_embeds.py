@@ -8,6 +8,7 @@ from typing import List, Optional
 
 from config.constants import Colors
 from ui.embed_now_playing import create_progress_bar
+from utils.builders.embed import build_volume_embed
 from utils.formatters import (
     format_duration,
     format_track_info,
@@ -263,12 +264,17 @@ def create_music_status_embed(
     return embed
 
 
-def create_volume_embed(volume: int) -> discord.Embed:
-    """🔊 Создание embed для изменения громкости"""
-    volume_emoji = "🔇" if volume == 0 else "🔉" if volume < 50 else "🔊"
-    return discord.Embed(
-        description=f"{volume_emoji} Громкость установлена на **{volume}%**",
-        color=Colors.SUCCESS,
+def create_volume_embed(
+    volume: int,
+    color: str = "default",
+    custom_emojis: dict = None,
+) -> discord.Embed:
+    """🔊 Создание embed для изменения громкости с кастомными эмодзи"""
+    return build_volume_embed(
+        volume=volume,
+        color=color,
+        custom_emojis=custom_emojis,
+        embed_color=Colors.SUCCESS,
     )
 
 

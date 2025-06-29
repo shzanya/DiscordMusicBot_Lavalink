@@ -5,6 +5,20 @@ from core.player import HarmonyPlayer
 from utils.formatters import format_duration
 
 
+def get_volume_emoji(
+    volume: int, color: str = "default", custom_emojis: dict = None
+) -> str:
+    """Получение кастомного эмодзи громкости в зависимости от уровня"""
+    if volume == 0:
+        return get_emoji("NK_VOLUM_M", color, custom_emojis)
+    elif volume < 50:
+        return get_emoji("NK_VOLUM_M", color, custom_emojis)
+    elif volume < 100:
+        return get_emoji("NK_VOLUME", color, custom_emojis)
+    else:
+        return get_emoji("NK_VOLUM_P", color, custom_emojis)
+
+
 def create_progress_bar(
     position: float,
     duration: float,
@@ -94,11 +108,11 @@ def create_now_playing_embed(
     if not isinstance(requester_name, str):
         requester_name = "Unknown"
 
-    # Получаем текущую громкость
+    # Получаем текущую громкость с кастомными эмодзи
     try:
         volume = getattr(player, "volume", 100)
-        volume_emoji = "🔇" if volume == 0 else "🔉" if volume < 50 else "🔊"
-        volume_info = f" | {volume_emoji} {volume}%"
+        volume_emoji = get_volume_emoji(volume, color, custom_emojis)
+        volume_info = f" | {volume_emoji} `{volume}%`"
     except Exception:
         volume_info = ""
 
@@ -106,7 +120,7 @@ def create_now_playing_embed(
         f"{track_link}\n\n"
         f"> Запрос от {requester_name}:\n"
         f"{progress_bar}\n\n"
-        f"Играет — `[{current_time}/{total_time}]{volume_info}`"
+        f"Играет — `[{current_time}/{total_time}]`{volume_info}"
     )
 
     embed = discord.Embed(title=artist, description=description, color=0x242429)

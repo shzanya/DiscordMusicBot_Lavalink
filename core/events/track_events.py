@@ -12,9 +12,9 @@ from discord.ext import commands
 from commands.music.playback import HarmonyPlayer
 from core.player import LoopMode
 from ui.music_embeds import (
-    create_empty_queue_embed,
     create_track_finished_embed,
 )
+from utils.builders.embed import build_disconnect_embed
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ class TrackEndEvent:
         player: HarmonyPlayer = payload.player
 
         if not player or getattr(player, "_is_destroyed", False):
-            logger.warning("❌ Invalid or destroyed player in track end event")
+            logger.debug("❌ Invalid or destroyed player in track end event - skipping")
             return
 
         if getattr(player, "_handling_track_end", False):
@@ -92,6 +92,13 @@ class TrackEndEvent:
         player._handling_track_end = True
 
         try:
+            # Дополнительная проверка на случай, если плеер был уничтожен во время обработки
+            if getattr(player, "_is_destroyed", False):
+                logger.debug(
+                    "❌ Player was destroyed during track end handling - aborting"
+                )
+                return
+
             # Handle track end based on reason
             if payload.reason == "REPLACED":
                 await self._handle_replaced_track(player)
@@ -120,6 +127,9 @@ class TrackEndEvent:
         self, player: HarmonyPlayer, payload: wavelink.TrackEndEventPayload
     ) -> None:
         """Handle normal track end."""
+        # Сохраняем ссылку на текущий трек перед очисткой
+        current_track = player._current_track
+
         # Update finished track message
         await self._update_finished_track_message(player, payload.track)
 
@@ -127,8 +137,8 @@ class TrackEndEvent:
         player.now_playing_message = None
         player._current_track = None
 
-        # Handle queue logic
-        await self._handle_queue_logic(player)
+        # Handle queue logic with saved track reference
+        await self._handle_queue_logic(player, current_track)
 
     async def _update_finished_track_message(
         self, player: HarmonyPlayer, track: wavelink.Playable
@@ -141,8 +151,21 @@ class TrackEndEvent:
 
         try:
             if player.now_playing_message:
-                await player.now_playing_message.edit(embed=embed, view=None)
-                logger.info("✅ Updated finished track embed")
+                # Проверяем, что сообщение еще существует и не было заменено
+                try:
+                    await player.now_playing_message.edit(embed=embed, view=None)
+                    logger.info("✅ Updated finished track embed")
+                except discord.NotFound:
+                    # Сообщение было удалено, отправляем новое
+                    await player.text_channel.send(embed=embed)
+                    logger.info("✅ Sent new finished track embed (original deleted)")
+                except discord.HTTPException as e:
+                    if "Cannot edit a message authored by another user" in str(e):
+                        # Сообщение было заменено другим, отправляем новое
+                        await player.text_channel.send(embed=embed)
+                        logger.info("✅ Sent new finished track embed (replaced)")
+                    else:
+                        raise
             else:
                 await player.text_channel.send(embed=embed)
                 logger.info("✅ Sent new finished track embed")
@@ -154,26 +177,29 @@ class TrackEndEvent:
             except Exception as e2:
                 logger.error(f"Failed to send embed: {e2}")
 
-    async def _handle_queue_logic(self, player: HarmonyPlayer) -> None:
+    async def _handle_queue_logic(
+        self, player: HarmonyPlayer, finished_track: wavelink.Playable = None
+    ) -> None:
         """Handle queue logic after track end."""
-        # Check if queue is empty
-        if not player.playlist or player.current_index >= len(player.playlist) - 1:
-            await self._handle_empty_queue(player)
-            return
 
-        # Handle loop modes
-        if player.state.loop_mode == LoopMode.TRACK and player._current_track:
-            requester = player._current_track.requester
+        # Handle loop modes first
+        if player.state.loop_mode == LoopMode.TRACK and finished_track:
+            requester = finished_track.requester
             if not requester:
                 requester = (
                     player.text_channel.guild.me if player.text_channel else None
                 )
-            await player.play_track(player._current_track, requester=requester)
+            await player.play_track(finished_track, requester=requester)
             return
 
-        if player.state.loop_mode == LoopMode.QUEUE and player._current_track:
+        if player.state.loop_mode == LoopMode.QUEUE and finished_track:
             player.current_index = (player.current_index + 1) % len(player.playlist)
             await player.play_by_index(player.current_index)
+            return
+
+        # Check if queue is empty (only after handling loop modes)
+        if not player.playlist or player.current_index >= len(player.playlist) - 1:
+            await self._handle_empty_queue(player)
             return
 
         # Play next track
@@ -186,10 +212,20 @@ class TrackEndEvent:
 
         if player.text_channel:
             try:
-                embed = create_empty_queue_embed()
+                # Получаем настройки эмодзи из плеера
+
+                if hasattr(player, "emoji_settings"):
+                    getattr(player.emoji_settings, "color", "default")
+                    getattr(
+                        player.emoji_settings, "custom_emojis", None
+                    )
+
+                embed = build_disconnect_embed(
+                    reason="в очереди не осталось треков", embed_color=0x242429
+                )
                 await player.text_channel.send(embed=embed)
-                logger.info("✅ Sent empty queue embed")
+                logger.info("✅ Sent disconnect embed")
             except Exception as e:
-                logger.error(f"❌ Error sending empty queue embed: {e}")
+                logger.error(f"❌ Error sending disconnect embed: {e}")
 
         await player.cleanup_disconnect()

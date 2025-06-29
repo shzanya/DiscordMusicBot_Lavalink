@@ -1,5 +1,6 @@
 import discord
 from typing import Optional
+import logging
 
 
 async def safe_send(
@@ -22,3 +23,13 @@ async def safe_edit(message: discord.Message, **kwargs) -> Optional[discord.Mess
         return None
     except discord.HTTPException:
         return None  # Можно добавить логирование, если нужно
+
+
+async def safe_interaction_send(interaction, embed, ephemeral=True):
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+        else:
+            await interaction.followup.send(embed=embed, ephemeral=ephemeral)
+    except Exception as e:
+        logging.getLogger(__name__).error(f"❌ Error sending embed: {e}")

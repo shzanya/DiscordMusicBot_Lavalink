@@ -107,6 +107,33 @@ async def set_guild_volume(guild_id: int, volume: int) -> bool:
         return False
 
 
+async def get_guild_loop_mode(guild_id: int) -> str:
+    """Get guild loop mode from database."""
+    try:
+        settings = await get_guild_settings(guild_id)
+        return settings.get("loop_mode", "none")
+    except Exception as e:
+        logger.error(f"Error getting guild loop mode for {guild_id}: {e}")
+        return "none"
+
+
+async def set_guild_loop_mode(guild_id: int, loop_mode: str) -> bool:
+    """Set guild loop mode in database."""
+    try:
+        collection = get_collection("guild_settings")
+
+        await collection.update_one(
+            {"guild_id": str(guild_id)}, {"$set": {"loop_mode": loop_mode}}, upsert=True
+        )
+
+        logger.debug(f"Saved guild loop mode for {guild_id}: {loop_mode}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error saving guild loop mode for {guild_id}: {e}")
+        return False
+
+
 async def close_mongo():
     """Close MongoDB connection."""
     global client

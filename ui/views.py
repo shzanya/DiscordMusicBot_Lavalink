@@ -6,6 +6,7 @@ from ui.embed_now_playing import create_now_playing_embed
 from ui.base_view import BaseEmojiView, EmojiSettings
 from utils.formatters import format_duration
 from utils.validators import check_player_ownership
+from utils.builders.embed import build_volume_control_embed, build_volume_embed
 from core.player import HarmonyPlayer, LoopMode
 from services import mongo_service
 from services.lyrics import LyricsService
@@ -306,21 +307,15 @@ class MusicPlayerView(BaseEmojiView):
                 )
                 return
 
-            if self.player.current_index <= 0:
+            # Проверяем, есть ли треки в плейлисте
+            if not self.player.playlist:
                 await self._safe_defer_or_respond(
-                    interaction, "📜 Нет предыдущих треков в плейлисте"
+                    interaction, "📜 Нет треков в плейлисте"
                 )
                 return
 
             await self._safe_defer_or_respond(interaction)
-            success = await self.player.play_previous()
-
-            if not success:
-                await interaction.followup.send(
-                    "❌ Не удалось воспроизвести предыдущий трек", ephemeral=True
-                )
-                return
-
+            await self.player.play_previous(interaction)
             await self.update_track_select()
 
         except Exception as e:
@@ -341,14 +336,15 @@ class MusicPlayerView(BaseEmojiView):
                 )
                 return
 
-            if self.player.current_index >= len(self.player.playlist) - 1:
+            # Проверяем, есть ли треки в плейлисте
+            if not self.player.playlist:
                 await self._safe_defer_or_respond(
-                    interaction, "📭 В плейлисте нет треков для пропуска"
+                    interaction, "📜 Нет треков в плейлисте"
                 )
                 return
 
             await self._safe_defer_or_respond(interaction)
-            await self.player.skip()
+            await self.player.skip(interaction)
             await self.update_track_select()
 
         except Exception as e:
@@ -367,12 +363,24 @@ class MusicPlayerView(BaseEmojiView):
             if self.player.state.loop_mode == LoopMode.NONE:
                 self.player.state.loop_mode = LoopMode.TRACK
                 message = "🔁 Вы включили повтор данного трека"
+                loop_mode_str = "track"
+
             elif self.player.state.loop_mode == LoopMode.TRACK:
                 self.player.state.loop_mode = LoopMode.QUEUE
                 message = "🔁 Вы включили повтор очереди треков"
+                loop_mode_str = "queue"
             else:  # LoopMode.QUEUE
                 self.player.state.loop_mode = LoopMode.NONE
                 message = "🔁 Вы отключили повтор треков"
+                loop_mode_str = "none"
+
+            # Сохраняем в БД
+            try:
+                await mongo_service.set_guild_loop_mode(
+                    interaction.guild.id, loop_mode_str
+                )
+            except Exception as e:
+                logger.warning(f"Failed to save loop mode to DB: {e}")
 
             await self._safe_defer_or_respond(interaction, message)
         except Exception as e:
@@ -562,10 +570,20 @@ class MusicPlayerView(BaseEmojiView):
             else:
                 current_volume = getattr(self.player, "volume", 100)
 
-            embed = discord.Embed(
-                title="🔊 Управление громкостью",
-                description=f"**Текущая громкость:** {current_volume}%",
-                color=0x242429,
+            # Получаем цвет из настроек
+            color = 0x242429  # дефолтный цвет
+            if hasattr(self.emoji_settings, "color") and self.emoji_settings.color:
+                try:
+                    if not isinstance(self.emoji_settings.color, str):
+                        color = self.emoji_settings.color
+                except Exception:
+                    color = 0x242429
+
+            embed = build_volume_control_embed(
+                volume=current_volume,
+                color=color,
+                custom_emojis=self.emoji_settings.custom_emojis,
+                embed_color=color,
             )
 
             # Создаем view с подкнопками
@@ -598,10 +616,11 @@ class MusicPlayerView(BaseEmojiView):
                             except Exception:
                                 color = 0x242429
 
-                        embed = discord.Embed(
-                            title="🔊 Управление громкостью",
-                            description=f"**Текущая громкость:** {new_volume}%",
+                        embed = build_volume_control_embed(
+                            volume=new_volume,
                             color=color,
+                            custom_emojis=self.parent_view.emoji_settings.custom_emojis,
+                            embed_color=color,
                         )
                         await self.volume_message.edit(embed=embed, view=self)
                     except Exception as e:
@@ -684,9 +703,15 @@ class MusicPlayerView(BaseEmojiView):
                                         return
                                     self.player.volume = volume
                                     await self.volume_view.update_volume_embed(volume)
+
+                                    # Используем эмбед билдер для сообщения об успехе
+                                    embed = build_volume_embed(
+                                        volume=volume,
+                                        color=self.volume_view.parent_view.emoji_settings.color,
+                                        custom_emojis=self.volume_view.parent_view.emoji_settings.custom_emojis,
+                                    )
                                     await modal_interaction.response.send_message(
-                                        f"🔊 Громкость установлена на {volume}%",
-                                        ephemeral=True,
+                                        embed=embed, ephemeral=True
                                     )
                                 except ValueError:
                                     await modal_interaction.response.send_message(
@@ -967,12 +992,8 @@ class MusicPlayerView(BaseEmojiView):
                 )
                 await self.message.edit(embed=embed, view=self)
 
-            await self._safe_defer_or_respond(
-                interaction,
-                "⏸️ Воспроизведение приостановлено"
-                if not is_paused
-                else "▶️ Воспроизведение возобновлено",
-            )
+            # Убираем сообщения при паузе/плей - только обновляем интерфейс
+            await interaction.response.defer()
         except Exception as e:
             logger.debug(f"Pause button error: {e}")
             await self._safe_defer_or_respond(
